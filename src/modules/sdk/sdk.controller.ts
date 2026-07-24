@@ -9,6 +9,18 @@ import { DeviceRegisterDto } from './dto/device.dto';
 export class SdkController {
     constructor(private sdk: SdkService) { }
 
+    /**
+     * FROZEN CONTRACT — do not change the request or response shape.
+     *
+     * Every app already published to the stores calls this endpoint through
+     * @codeimplants/version-control, and those binaries cannot be updated on
+     * demand. It also delivers force-update and the kill switch, so breaking it
+     * disables the only mechanism for fixing a bad release.
+     *
+     * Additive changes (new OPTIONAL request fields, new response fields) are
+     * safe. Anything else needs a new version at /sdk/v1/*.
+     * See docs/api-versioning.md.
+     */
     @Post('version/check')
     checkVersion(
         @Headers('x-api-key') apiKey: string,
