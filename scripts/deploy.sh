@@ -193,9 +193,24 @@ info "Deploying '$ENV_NAME' → $DEPLOY_SSH_HOST:$APP_DIR (pm2: $PM2_NAME) ..."
 ssh "$DEPLOY_SSH_HOST" "$(as_app_user "$REMOTE")"
 
 if [[ -n "${HEALTH_PATH:-}" ]]; then
-  info "Health check on 127.0.0.1:$PORT$HEALTH_PATH ..."
-  sleep 3
-  CODE="$(ssh "$DEPLOY_SSH_HOST" "curl -s -o /dev/null -w '%{http_code}' --max-time 10 'http://127.0.0.1:$PORT$HEALTH_PATH'" || echo 000)"
+  # Poll rather than sleep-once: a cold Neon connection plus Nest bootstrap can
+  # take ~20s, so a single early probe reports a false failure on a deploy that
+  # actually succeeded. Capture only the last line and never append a fallback
+  # to curl's own output, or a connection refusal reads as "000000".
+  HEALTH_RETRIES="${HEALTH_RETRIES:-12}"
+  HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
+  info "Health check on 127.0.0.1:$PORT$HEALTH_PATH (up to $((HEALTH_RETRIES * HEALTH_INTERVAL))s) ..."
+  CODE="000"
+  for attempt in $(seq 1 "$HEALTH_RETRIES"); do
+    sleep "$HEALTH_INTERVAL"
+    CODE="$(ssh "$DEPLOY_SSH_HOST" \
+      "curl -s -o /dev/null -w '%{http_code}' --max-time 10 'http://127.0.0.1:$PORT$HEALTH_PATH' 2>/dev/null || true" \
+      | tail -n1 | tr -dc '0-9')"
+    [[ -z "$CODE" ]] && CODE="000"
+    [[ "$CODE" =~ ^[23] ]] && break
+    info "  attempt $attempt/$HEALTH_RETRIES: HTTP $CODE — still starting ..."
+  done
+
   if [[ "$CODE" =~ ^[23] ]]; then
     ok "Health check passed (HTTP $CODE)."
   else
