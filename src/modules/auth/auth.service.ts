@@ -15,6 +15,8 @@ import { JwtService } from '@nestjs/jwt';
 const SALT_ROUNDS = 12;
 const OTP_TTL_MS = 5 * 60 * 1000;
 const TWOFACTOR_TEMPLATE = 'OTP1';
+/** Fixed code accepted on dev/preprod so lower envs need no real SMS. */
+const STATIC_OTP = '123456';
 
 @Injectable()
 export class AuthService {
@@ -62,8 +64,20 @@ export class AuthService {
     // stored. Only phones belonging to an active admin are ever texted.
     // ---------------------------------------------------------------------
 
-    private get isDevOtp(): boolean {
-        return !process.env.TWOFACTOR_API_KEY || process.env.NODE_ENV === 'dev';
+    /**
+     * Lower environments accept a fixed OTP instead of sending a real SMS, so
+     * dev/preprod sign-in costs nothing and works without a phone in hand.
+     * Mirrors the sonebill backend, except sonebill treats only `dev` this way
+     * while nexus also includes `preprod` (deliberate — preprod here is an
+     * internal rehearsal environment, not a customer-facing one).
+     *
+     * Prod always goes through 2Factor. If the key is missing anywhere we fall
+     * back to the static OTP rather than failing closed, because an admin locked
+     * out of the console cannot fix the console.
+     */
+    private get usesStaticOtp(): boolean {
+        const env = process.env.NODE_ENV ?? '';
+        return env === 'dev' || env === 'preprod' || !process.env.TWOFACTOR_API_KEY;
     }
 
     private signOtpHash(phone: string, sessionId: string, expires: number): string {
@@ -114,16 +128,17 @@ export class AuthService {
 
         const expires = Date.now() + OTP_TTL_MS;
 
-        if (this.isDevOtp) {
-            const otp = Math.floor(100000 + Math.random() * 900000).toString();
-            const sessionId = `DEV_SESSION_${otp}`;
+        if (this.usesStaticOtp) {
+            // No SMS is sent. The code is always STATIC_OTP, so echoing it back
+            // leaks nothing that is not already fixed and known.
+            const sessionId = `DEV_SESSION_${Date.now()}`;
             return {
                 phone,
                 sessionId,
                 fullhash: this.signOtpHash(phone, sessionId, expires),
-                otp, // dev only — lets the console be exercised without real SMS
+                otp: STATIC_OTP,
                 success: true,
-                note: 'Development mode - OTP included in response',
+                note: `Lower environment - use OTP ${STATIC_OTP}`,
             };
         }
 
@@ -159,9 +174,10 @@ export class AuthService {
 
         this.verifyOtpHash(phone, sessionId, fullhash);
 
-        if (this.isDevOtp) {
-            // Dev sessions embed the expected OTP; the HMAC above proves it is ours.
-            if (sessionId !== `DEV_SESSION_${otp}`) {
+        if (this.usesStaticOtp) {
+            // The HMAC above already proved this session came from us and has not
+            // expired, so the only remaining check is the fixed code.
+            if (String(otp) !== STATIC_OTP) {
                 throw new UnauthorizedException('Invalid OTP');
             }
         } else {
