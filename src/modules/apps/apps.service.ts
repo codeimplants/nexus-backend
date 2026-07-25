@@ -1,15 +1,47 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { v4 as uuid } from 'uuid';
+import { encryptServiceToken } from '../../common/crypto/service-token-cipher';
 
 export interface AccessContext {
     userId: string;
     role: string;
 }
 
+/**
+ * Scalar fields safe to return to the dashboard. Deliberately excludes
+ * backendServiceToken (the app's federation credential) — see AppAdminService,
+ * which is the only place that reads it back off the database.
+ */
+const APP_SAFE_SELECT = {
+    id: true,
+    name: true,
+    appId: true,
+    minVersionIos: true,
+    minVersionAndroid: true,
+    apiKey: true,
+    description: true,
+    platforms: true,
+    icon: true,
+    isActive: true,
+    backendBaseUrl: true,
+    backendUsersPath: true,
+    backendDeleteUserPath: true,
+    createdAt: true,
+    updatedAt: true,
+} as const;
+
 @Injectable()
 export class AppsService {
     constructor(private prisma: PrismaService) { }
+
+    /** Encrypts backendServiceToken in place when the caller is setting/rotating it. */
+    private prepareAppData<T extends { backendServiceToken?: unknown }>(data: T): T {
+        if (typeof data.backendServiceToken === 'string' && data.backendServiceToken.length > 0) {
+            return { ...data, backendServiceToken: encryptServiceToken(data.backendServiceToken) };
+        }
+        return data;
+    }
 
     /** Returns app IDs the user is allowed to access (all for Admin, else from AppCollaborator). */
     private async getAccessibleAppIds(ctx: AccessContext): Promise<string[] | null> {
@@ -27,7 +59,7 @@ export class AppsService {
         const { collaboratorIds: _c, ...rest } = appData as { collaboratorIds?: string[];[k: string]: any };
         const app = await this.prisma.app.create({
             data: {
-                ...rest,
+                ...this.prepareAppData(rest),
                 apiKey: uuid(),
             } as any,
         });
@@ -45,7 +77,8 @@ export class AppsService {
         const where = appIds === null ? {} : { id: { in: appIds } };
         return this.prisma.app.findMany({
             where,
-            include: {
+            select: {
+                ...APP_SAFE_SELECT,
                 storeUrls: true,
                 _count: {
                     select: {
@@ -66,7 +99,8 @@ export class AppsService {
     async findOne(id: string, ctx?: AccessContext) {
         const app = await this.prisma.app.findUnique({
             where: { id },
-            include: {
+            select: {
+                ...APP_SAFE_SELECT,
                 rules: true,
                 storeUrls: true,
                 maintenanceMode: true,
@@ -94,13 +128,14 @@ export class AppsService {
             const { collaboratorIds: _, ...rest } = data;
             return this.prisma.app.update({
                 where: { id },
-                data: rest,
+                data: this.prepareAppData(rest),
+                select: APP_SAFE_SELECT,
             });
         }
         const { collaboratorIds, ...appData } = data;
         const app = await this.prisma.app.update({
             where: { id },
-            data: appData,
+            data: this.prepareAppData(appData),
         });
         if (collaboratorIds !== undefined) {
             await this.prisma.appCollaborator.deleteMany({ where: { appId: id } });

@@ -7,6 +7,7 @@ import {
     ServiceUnavailableException,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { decryptServiceToken } from '../../common/crypto/service-token-cipher';
 
 /** Contact details resolved from an app's own backend (never stored here). */
 export interface FederatedProfile {
@@ -31,6 +32,10 @@ export class AppAdminService {
 
     constructor(private prisma: PrismaService) { }
 
+    private decryptToken(stored: string | null): string | null {
+        return stored ? decryptServiceToken(stored) : null;
+    }
+
     async proxy(
         appId: string,
         method: string,
@@ -48,7 +53,7 @@ export class AppAdminService {
         }
 
         return this.call(
-            { baseUrl: app.backendBaseUrl, token: app.backendServiceToken },
+            { baseUrl: app.backendBaseUrl, token: this.decryptToken(app.backendServiceToken) },
             method,
             subPath,
             query,
@@ -111,7 +116,7 @@ export class AppAdminService {
         for (const target of targets) {
             try {
                 await this.call(
-                    { baseUrl: app.backendBaseUrl, token: app.backendServiceToken },
+                    { baseUrl: app.backendBaseUrl, token: this.decryptToken(app.backendServiceToken) },
                     'DELETE',
                     `${app.backendDeleteUserPath}/${encodeURIComponent(target.externalUserId)}`,
                     {},
@@ -162,7 +167,7 @@ export class AppAdminService {
 
         try {
             const payload = await this.call(
-                { baseUrl: app.backendBaseUrl, token: app.backendServiceToken },
+                { baseUrl: app.backendBaseUrl, token: this.decryptToken(app.backendServiceToken) },
                 'GET',
                 app.backendUsersPath,
                 {},
