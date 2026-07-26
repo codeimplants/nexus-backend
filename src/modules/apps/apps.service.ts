@@ -35,12 +35,40 @@ const APP_SAFE_SELECT = {
 export class AppsService {
     constructor(private prisma: PrismaService) { }
 
-    /** Encrypts backendServiceToken in place when the caller is setting/rotating it. */
+    /**
+     * Encrypts backendServiceToken in place when the caller is setting/rotating it.
+     *
+     * A blank string is dropped rather than saved: the dashboard leaves the token
+     * input empty to mean "keep what's already stored", and persisting '' would
+     * both wipe a working credential and still look configured to callers that
+     * only test for null. Clearing a token is done by sending an explicit null.
+     */
     private prepareAppData<T extends { backendServiceToken?: unknown }>(data: T): T {
-        if (typeof data.backendServiceToken === 'string' && data.backendServiceToken.length > 0) {
-            return { ...data, backendServiceToken: encryptServiceToken(data.backendServiceToken) };
+        if (typeof data.backendServiceToken !== 'string') return data;
+
+        const token = data.backendServiceToken.trim();
+        if (!token) {
+            const { backendServiceToken: _blank, ...rest } = data;
+            return rest as T;
         }
-        return data;
+        return { ...data, backendServiceToken: encryptServiceToken(token) };
+    }
+
+    /**
+     * Which of these apps have a federation token configured.
+     *
+     * Deliberately a separate query filtering on the column rather than
+     * selecting it: the dashboard needs to know a token EXISTS (to show
+     * "configured" and offer rotation) and must never receive its value, so
+     * the ciphertext is not loaded into this code path at all.
+     */
+    private async withServiceToken(appIds: string[]): Promise<Set<string>> {
+        if (appIds.length === 0) return new Set();
+        const rows = await this.prisma.app.findMany({
+            where: { id: { in: appIds }, NOT: { backendServiceToken: null } },
+            select: { id: true },
+        });
+        return new Set(rows.map((r) => r.id));
     }
 
     /** Returns app IDs the user is allowed to access (all for Admin, else from AppCollaborator). */
@@ -75,7 +103,7 @@ export class AppsService {
     async findAll(ctx: AccessContext) {
         const appIds = await this.getAccessibleAppIds(ctx);
         const where = appIds === null ? {} : { id: { in: appIds } };
-        return this.prisma.app.findMany({
+        const apps = await this.prisma.app.findMany({
             where,
             select: {
                 ...APP_SAFE_SELECT,
@@ -94,6 +122,8 @@ export class AppsService {
                 },
             },
         });
+        const configured = await this.withServiceToken(apps.map((a) => a.id));
+        return apps.map((a) => ({ ...a, hasBackendServiceToken: configured.has(a.id) }));
     }
 
     async findOne(id: string, ctx?: AccessContext) {
@@ -119,7 +149,8 @@ export class AppsService {
             },
         });
         if (!app) throw new NotFoundException('App not found');
-        return app;
+        const configured = await this.withServiceToken([app.id]);
+        return { ...app, hasBackendServiceToken: configured.has(app.id) };
     }
 
     async update(id: string, data: { collaboratorIds?: string[];[k: string]: any }, ctx: AccessContext) {

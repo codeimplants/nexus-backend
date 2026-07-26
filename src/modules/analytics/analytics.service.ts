@@ -193,7 +193,11 @@ export class AnalyticsService {
         ]);
 
         if (users.length === 0) {
-            return { total, limit, offset, users: [] };
+            // No one to enrich, so the app's backend isn't called at all. Report
+            // `enriched: false` for a stable response shape — never as evidence
+            // that federation is unconfigured, which is what the UI would imply
+            // if it flagged an empty list.
+            return { total, limit, offset, enriched: false, users: [] };
         }
 
         const [rollups, profiles] = await Promise.all([
@@ -296,7 +300,7 @@ export class AnalyticsService {
             .sort((a, b) => (b._sum.totalDurationSec ?? 0) - (a._sum.totalDurationSec ?? 0));
 
         if (qualifying.length === 0) {
-            return { windowDays: days, thresholds: { minMinutes: opts.minMinutes ?? 30, minSessions, minActiveDays }, leads: [] };
+            return { windowDays: days, thresholds: { minMinutes: opts.minMinutes ?? 30, minSessions, minActiveDays }, enriched: false, leads: [] };
         }
 
         const [users, profiles] = await Promise.all([
