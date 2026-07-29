@@ -34,6 +34,13 @@ const ALLOWED_ORIGINS = [
   // list below would let ANY Firebase-hosted site call this API.
   'https://version-control-vc.firebaseapp.com',
   'https://version-control-vc.web.app',
+
+  // SoneBill's react-native-web build (project sonebill-534ab), the "real"
+  // SoneBill web surface — sonebill.codeimplants.com above is the separate
+  // (unused) admin-dashboard SPA, not this. Calls /sdk/* directly from the
+  // browser via platformAnalytics.ts.
+  'https://sonebill-534ab.firebaseapp.com',
+  'https://sonebill-534ab.web.app',
 ];
 
 // Any subdomain (and the apex) of these domains is allowed.
@@ -66,7 +73,10 @@ async function bootstrap() {
       return callback(null, false);
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    // x-api-key: how /sdk/* endpoints authenticate web/RN-web clients
+    // (platformAnalytics.ts) — missing here silently CORS-blocks every such
+    // call from a browser (native apps are unaffected; CORS is browser-only).
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
     credentials: true,
   });
 
