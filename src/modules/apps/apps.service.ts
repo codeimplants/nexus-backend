@@ -27,6 +27,7 @@ const APP_SAFE_SELECT = {
     backendBaseUrl: true,
     backendUsersPath: true,
     backendDeleteUserPath: true,
+    ga4PropertyId: true,
     createdAt: true,
     updatedAt: true,
 } as const;

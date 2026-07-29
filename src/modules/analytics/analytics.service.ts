@@ -43,11 +43,11 @@ export class AnalyticsService {
                     lastCheckIn: { gte: since },
                 },
             }),
+            // Every AppAnalytics row is written by a version check by construction
+            // (see sdk.service.ts's logAnalytics) — count all of them, not just the
+            // 'version_check' (no-op) outcome, which would undercount total checks.
             this.prisma.appAnalytics.count({
-                where: {
-                    ...(appIds === null ? {} : { appId: { in: appIds } }),
-                    eventType: 'version_check',
-                },
+                where: appIds === null ? {} : { appId: { in: appIds } },
             }),
             this.prisma.appAnalytics.count({
                 where: {
@@ -76,9 +76,12 @@ export class AnalyticsService {
         });
     }
 
-    async getVersionChecks(ctx: AccessContext) {
+    async getVersionChecks(ctx: AccessContext, eventType?: string) {
         const appIds = await this.getAccessibleAppIds(ctx);
-        const where: any = { eventType: 'version_check' };
+        // "Version checks" and AppAnalytics rows are synonymous here (every row
+        // is written by a version check) — default to all outcomes, optionally
+        // narrowed to one (e.g. eventType=update_force).
+        const where: any = eventType ? { eventType } : {};
         if (appIds !== null) where.appId = { in: appIds };
         return this.prisma.appAnalytics.findMany({
             where,
@@ -153,6 +156,34 @@ export class AnalyticsService {
                 count: Number(r.count),
             })),
         };
+    }
+
+    /**
+     * Growth + churn labels for one app: new/active/churned/never-active user
+     * counts, surfacing the same "inactive" cutoff getUsers'/purgeUsers'
+     * inactiveDays already uses as labeled numbers instead of a raw list — this
+     * is the Bulk Cleanup targeting logic made visible, not a duplicate of a
+     * Firebase report.
+     */
+    async getGrowth(appId: string, churnDays = 30) {
+        const now = Date.now();
+        const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
+        const monthAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
+        const churnCutoff = new Date(now - churnDays * 24 * 60 * 60 * 1000);
+
+        const [totalUsers, newThisWeek, newThisMonth, neverActive, churned, active] = await Promise.all([
+            this.prisma.endUser.count({ where: { appId } }),
+            this.prisma.endUser.count({ where: { appId, registeredAt: { gte: weekAgo } } }),
+            this.prisma.endUser.count({ where: { appId, registeredAt: { gte: monthAgo } } }),
+            // Zero DailyUsage rows ever — not a lastActiveAt===registeredAt proxy,
+            // since lastActiveAt updates on any touched event (login_success,
+            // screen_view, ...), not just a completed session.
+            this.prisma.endUser.count({ where: { appId, dailyUsage: { none: {} } } }),
+            this.prisma.endUser.count({ where: { appId, lastActiveAt: { lt: churnCutoff } } }),
+            this.prisma.endUser.count({ where: { appId, lastActiveAt: { gte: churnCutoff } } }),
+        ]);
+
+        return { totalUsers, newThisWeek, newThisMonth, neverActive, churned, active, churnDays };
     }
 
     /**

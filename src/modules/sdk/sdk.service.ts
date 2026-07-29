@@ -200,14 +200,29 @@ export class SdkService {
     }
 
     /**
+     * VersionEngine returns its outcome as an uppercase status; AppAnalytics'
+     * eventType is stored/queried as lowercase snake_case (see analytics.service.ts).
+     * Keep this map as the single source of truth for that translation.
+     */
+    private static readonly EVENT_TYPE_BY_STATUS: Record<string, string> = {
+        NONE: 'version_check',
+        SOFT_UPDATE: 'update_soft',
+        FORCE_UPDATE: 'update_force',
+        KILL_SWITCH: 'kill_switch',
+        BLOCKED: 'blocked',
+        MAINTENANCE: 'maintenance',
+    };
+
+    /**
      * Log analytics event
      */
     private async logAnalytics(
         appId: string,
         data: VersionCheckDto,
-        eventType: string,
+        status: string,
     ): Promise<void> {
         try {
+            const eventType = SdkService.EVENT_TYPE_BY_STATUS[status] ?? status;
             await this.prisma.appAnalytics.create({
                 data: {
                     appId,

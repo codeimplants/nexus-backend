@@ -1,5 +1,6 @@
 import { BadRequestException, Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { AnalyticsService, UsageGranularity } from './analytics.service';
+import { FirebaseAnalyticsService } from '../firebase-analytics/firebase-analytics.service';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { AppAccessGuard } from '../../common/guards/app-access.guard';
 import { User } from '../../common/decorators/user.decorator';
@@ -9,7 +10,10 @@ const GRANULARITIES: UsageGranularity[] = ['day', 'week', 'month', 'year'];
 @Controller('admin/analytics')
 @UseGuards(JwtGuard)
 export class AnalyticsController {
-    constructor(private analytics: AnalyticsService) { }
+    constructor(
+        private analytics: AnalyticsService,
+        private firebaseAnalytics: FirebaseAnalyticsService,
+    ) { }
 
     @Get('overview')
     getOverview(@User() user: { id: string; role: string }) {
@@ -28,6 +32,12 @@ export class AnalyticsController {
     @UseGuards(AppAccessGuard)
     getAudience(@Param('appId') appId: string, @Query('days') days?: string) {
         return this.analytics.getAudience(appId, days ? Number(days) : undefined);
+    }
+
+    @Get('apps/:appId/growth')
+    @UseGuards(AppAccessGuard)
+    getGrowth(@Param('appId') appId: string, @Query('churnDays') churnDays?: string) {
+        return this.analytics.getGrowth(appId, churnDays ? Number(churnDays) : undefined);
     }
 
     @Get('apps/:appId/users')
@@ -86,9 +96,42 @@ export class AnalyticsController {
         });
     }
 
+    // ---- Firebase (GA4) federation — real numbers pulled from each app's own
+    // Firebase project; empty/"connected: false" until App.ga4PropertyId is set
+    // and the shared reporting service account is granted access on it. ----
+
+    @Get('apps/:appId/firebase/overview')
+    @UseGuards(AppAccessGuard)
+    getFirebaseOverview(@Param('appId') appId: string, @Query('days') days?: string) {
+        return this.firebaseAnalytics.getOverview(appId, days ? Number(days) : undefined);
+    }
+
+    @Get('apps/:appId/firebase/top-screens')
+    @UseGuards(AppAccessGuard)
+    getFirebaseTopScreens(
+        @Param('appId') appId: string,
+        @Query('days') days?: string,
+        @Query('limit') limit?: string,
+    ) {
+        return this.firebaseAnalytics.getTopScreens(
+            appId,
+            days ? Number(days) : undefined,
+            limit ? Number(limit) : undefined,
+        );
+    }
+
+    @Get('apps/:appId/firebase/retention')
+    @UseGuards(AppAccessGuard)
+    getFirebaseRetention(@Param('appId') appId: string) {
+        return this.firebaseAnalytics.getRetention(appId);
+    }
+
     @Get('version-checks')
-    getVersionChecks(@User() user: { id: string; role: string }) {
-        return this.analytics.getVersionChecks({ userId: user.id, role: user.role });
+    getVersionChecks(
+        @User() user: { id: string; role: string },
+        @Query('eventType') eventType?: string,
+    ) {
+        return this.analytics.getVersionChecks({ userId: user.id, role: user.role }, eventType);
     }
 
     @Get('platform-distribution')

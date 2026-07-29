@@ -66,6 +66,11 @@ model App {
   // own deletion process runs there (cascade + retention of basic details).
   // e.g. "/api/dukandar"
   backendDeleteUserPath String?
+  // GA4 property id for this app's own Firebase Analytics. Read access must be
+  // granted to Nexus's shared reporting service account (see
+  // GA4_SERVICE_ACCOUNT_KEY_PATH) via Firebase Console > Property Access
+  // Management on this property — not a secret itself, so it isn't encrypted.
+  ga4PropertyId       String?
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
   rules               VersionRule[]
