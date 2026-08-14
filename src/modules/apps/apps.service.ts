@@ -124,7 +124,60 @@ export class AppsService {
             },
         });
         const configured = await this.withServiceToken(apps.map((a) => a.id));
-        return apps.map((a) => ({ ...a, hasBackendServiceToken: configured.has(a.id) }));
+        const liveness = await this.lastSeen(apps.map((a) => a.id));
+        return apps.map((a) => ({
+            ...a,
+            hasBackendServiceToken: configured.has(a.id),
+            ...this.livenessOf(liveness.get(a.id) ?? null, a.createdAt, a.isActive),
+        }));
+    }
+
+    /**
+     * An app is "dark" when nexus has heard nothing from it recently.
+     *
+     * This exists because sonebill shipped 1.0.15 with an empty API key and went
+     * completely silent for twelve days without anyone noticing: the client
+     * disables telemetry when the key is blank, and version-check failures are
+     * swallowed so a dead backend cannot crash the app. Both are correct
+     * individually, and together they made a fully disconnected release look
+     * healthy. Nexus holds the only evidence, so it is the thing that must notice.
+     */
+    private static readonly DARK_AFTER_HOURS = 48;
+
+    /** Most recent contact per app: version checks and device check-ins. */
+    private async lastSeen(ids: string[]): Promise<Map<string, Date>> {
+        if (ids.length === 0) return new Map();
+        const [checks, devices] = await Promise.all([
+            this.prisma.appAnalytics.groupBy({
+                by: ['appId'],
+                where: { appId: { in: ids } },
+                _max: { date: true },
+            }),
+            this.prisma.device.groupBy({
+                by: ['appId'],
+                where: { appId: { in: ids } },
+                _max: { lastCheckIn: true },
+            }),
+        ]);
+
+        const out = new Map<string, Date>();
+        const record = (appId: string, at: Date | null) => {
+            if (!at) return;
+            const prev = out.get(appId);
+            if (!prev || at > prev) out.set(appId, at);
+        };
+        checks.forEach((r) => record(r.appId, r._max.date));
+        devices.forEach((r) => record(r.appId, r._max.lastCheckIn));
+        return out;
+    }
+
+    private livenessOf(lastSeenAt: Date | null, createdAt: Date, isActive: boolean) {
+        const cutoff = new Date(Date.now() - AppsService.DARK_AFTER_HOURS * 3600_000);
+        // A freshly registered app has not had time to be heard from, so it is
+        // never reported dark before the window has elapsed since creation.
+        const isDark =
+            isActive && createdAt < cutoff && (lastSeenAt === null || lastSeenAt < cutoff);
+        return { lastSeenAt, isDark, darkAfterHours: AppsService.DARK_AFTER_HOURS };
     }
 
     async findOne(id: string, ctx?: AccessContext) {
