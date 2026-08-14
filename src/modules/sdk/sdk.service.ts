@@ -30,31 +30,95 @@ export class SdkService {
         return { id: app.id };
     }
 
+    /**
+     * Version checks that arrived with neither a usable API key nor a resolvable
+     * package name, counted since boot. A non-zero value means some build in the
+     * wild cannot be identified at all — see getDiagnostics().
+     */
+    private unidentifiedVersionChecks = 0;
+
+    /** Snapshot for the dashboard's misconfiguration warnings. */
+    getDiagnostics(): { unidentifiedVersionChecks: number } {
+        return { unidentifiedVersionChecks: this.unidentifiedVersionChecks };
+    }
+
+    /**
+     * Resolve the app for a version check: API key first, package name second.
+     *
+     * App.appId carries no unique constraint, so the package-name path uses
+     * findMany and takes the oldest active match. Two active apps sharing a
+     * package name is a data-entry mistake, so it is warned about rather than
+     * silently resolved one way or the other.
+     */
+    private async resolveAppForVersionCheck(apiKey: string, packageName?: string) {
+        const include = { maintenanceMode: true, storeUrls: true };
+
+        if (apiKey) {
+            const app = await this.prisma.app.findUnique({ where: { apiKey }, include });
+            if (!app) throw new UnauthorizedException('Invalid API Key');
+            if (!app.isActive) throw new UnauthorizedException('App is deactivated');
+            return app;
+        }
+
+        if (packageName) {
+            const matches = await this.prisma.app.findMany({
+                where: { appId: packageName, isActive: true },
+                include,
+                orderBy: { createdAt: 'asc' },
+            });
+            if (matches.length > 1) {
+                this.logger.warn(
+                    `Package name "${packageName}" matches ${matches.length} active apps; using the oldest. Give each app a distinct appId.`,
+                );
+            }
+            if (matches.length > 0) {
+                this.logger.log(
+                    `Version check identified by package name "${packageName}" — no API key was sent. ` +
+                    `Version control works, but engagement tracking does not: that build cannot call /sdk/events.`,
+                );
+                return matches[0];
+            }
+        }
+
+        // Neither identifier worked. Reaching here always means no API key was
+        // sent, since an invalid key throws above.
+        //
+        // Log periodically rather than per request: sonebill produced 880 of these
+        // in twelve days and every one was an unread single line. A running total
+        // at intervals is greppable and hard to mistake for routine noise.
+        this.unidentifiedVersionChecks += 1;
+        if (this.unidentifiedVersionChecks % 100 === 1) {
+            this.logger.warn(
+                `${this.unidentifiedVersionChecks} version check(s) since boot could not be attributed to any app ` +
+                `(no API key, and package name "${packageName ?? 'not sent'}" matched nothing). ` +
+                `Some build in the wild is misconfigured, or an app is missing its appId in nexus.`,
+            );
+        }
+        throw new UnauthorizedException('Missing API Key');
+    }
+
     async checkVersion(
         apiKey: string,
         data: VersionCheckDto,
     ): Promise<VersionCheckResponse> {
         try {
-            // 1. Validate API Key and get app
-            if (!apiKey) {
-                throw new UnauthorizedException('Missing API Key');
-            }
-
-            const app = await this.prisma.app.findUnique({
-                where: { apiKey },
-                include: {
-                    maintenanceMode: true,
-                    storeUrls: true,
-                },
-            });
-
-            if (!app) {
-                throw new UnauthorizedException('Invalid API Key');
-            }
-
-            if (!app.isActive) {
-                throw new UnauthorizedException('App is deactivated');
-            }
+            // 1. Identify the app.
+            //
+            // The API key is preferred, but version/check deliberately also accepts
+            // the package name (data.appId, which the SDK auto-detects natively via
+            // VCAppInfo / react-native-device-info and sends without any config).
+            //
+            // Why: force-update and the kill switch are the only remedy for a bad
+            // release, and they must not depend on a value that a build can ship
+            // empty. Sonebill 1.0.15 did exactly that — an unset VITE_VC_API_KEY
+            // compiled to '', so every check 401'd and the app was unreachable.
+            // The package name is compiled into the binary by the platform itself
+            // and cannot be misconfigured.
+            //
+            // This fallback is limited to version/check, which only reveals whether
+            // a newer version exists. Writes (/sdk/device, /sdk/events,
+            // /sdk/user/identify) still require the key via requireApp().
+            const app = await this.resolveAppForVersionCheck(apiKey, data.appId);
 
             // 2. Track device (async, non-blocking)
             this.trackDevice(app.id, data).catch((err) => {
