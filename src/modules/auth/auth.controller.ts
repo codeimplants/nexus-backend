@@ -27,10 +27,17 @@ export class AuthController {
     return this.auth.login(body.email, body.password);
   }
 
-  @Post('register')
-  register(@Body() body: { email: string; password: string; name?: string }) {
-    return this.auth.register(body);
-  }
+  // POST /auth/register is deliberately absent.
+  //
+  // It existed, unguarded, and created an admin with role: 'ADMIN' hardcoded,
+  // returning a signed token straight back. Anyone who could reach this service
+  // could make themselves a full administrator of the platform — and with it,
+  // every app's API key, every version rule, and the kill switch for all of
+  // them. Nothing in the dashboard ever called it.
+  //
+  // Creating an admin belongs behind an existing admin: POST /admin/users,
+  // which is guarded by JwtGuard + RolesGuard('ADMIN'). Do not reinstate a
+  // self-service registration route on this service.
 
   @Get('me')
   @UseGuards(JwtGuard)

@@ -1,7 +1,6 @@
 import {
     Injectable,
     UnauthorizedException,
-    ConflictException,
     ForbiddenException,
     BadRequestException,
     ServiceUnavailableException,
@@ -229,29 +228,12 @@ export class AuthService {
         };
     }
 
-    async register(data: { email: string; password: string; name?: string }) {
-        const exists = await this.prisma.admin.findUnique({
-            where: { email: data.email }
-        });
-        if (exists) throw new ConflictException('User with this email already exists');
-
-        const hash = await bcrypt.hash(data.password, SALT_ROUNDS);
-        const admin = await this.prisma.admin.create({
-            data: {
-                email: data.email,
-                password: hash,
-                name: data.name ?? 'Admin',
-                role: 'ADMIN',
-            },
-            select: { id: true, email: true, name: true, role: true },
-        });
-
-        const token = this.signToken(admin);
-        return {
-            token,
-            user: this.toUserPayload(admin),
-        };
-    }
+    // register() was here. It minted an admin with role: 'ADMIN' hardcoded and
+    // handed back a token, and its only caller was an unguarded POST
+    // /auth/register. Removed rather than guarded: UsersService.create already
+    // covers this behind JwtGuard + RolesGuard('ADMIN'), and a method that
+    // silently grants full administrator rights is one wiring mistake away from
+    // being exposed again.
 
     async me(userId: string) {
         const admin = await this.prisma.admin.findUnique({
