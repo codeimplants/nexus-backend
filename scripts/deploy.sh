@@ -19,6 +19,9 @@
 #   --dry-run                 Show the remote script; make no changes.
 #   --restart-only            Skip git pull / npm ci / build / migrate; just restart.
 #   --inspect                 Read-only survey of the server.
+#   --check-migrations        With --env: list migrations this deploy would apply
+#                             and exit. Changes nothing. Exit 0 = none pending,
+#                             10 = some pending (so a wrapper can branch on it).
 #
 # Each environment runs from its own checkout, so a build for one cannot affect
 # another. Deploying to dev or preprod is a genuine rehearsal for prod.
@@ -47,7 +50,7 @@ die()  { printf '%s%s%s\n' "$RED" "ERROR: $*" "$NC" >&2; exit 1; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="$ROOT/scripts/deploy.config.sh"
 
-ENV_NAME=""; ASSUME_YES=0; DRY_RUN=0; RESTART_ONLY=0; INSPECT=0; MIGRATE_PROD=0
+ENV_NAME=""; ASSUME_YES=0; DRY_RUN=0; RESTART_ONLY=0; INSPECT=0; MIGRATE_PROD=0; CHECK_MIGRATIONS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env)          ENV_NAME="${2:-}"; shift 2 ;;
@@ -56,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run)      DRY_RUN=1; shift ;;
     --restart-only) RESTART_ONLY=1; shift ;;
     --inspect)      INSPECT=1; shift ;;
+    --check-migrations) CHECK_MIGRATIONS=1; shift ;;
     -h|--help)      sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)              die "Unknown argument: $1  (try --help)" ;;
   esac
@@ -94,6 +98,66 @@ if [[ $INSPECT -eq 1 ]]; then
   ")"
   ok "Inspection complete — nothing changed."
   exit 0
+fi
+
+# Migrations this deploy would apply: those present in origin/$BRANCH but not
+# recorded as finished in the target database.
+#
+# Exists because the alternative is asking a human "does this deploy contain a
+# schema change?" and trusting the answer. Answering "no" when it does leaves
+# the app running against the old schema, and it errors. The facts are on the
+# server, so read them instead of asking.
+#
+# Deliberately compares the fetched branch against the database rather than
+# running `prisma migrate status`: that reads the checkout's *current* files,
+# which are still the old commit at this point in the deploy and so cannot see
+# anything incoming. Nothing here writes — no reset, no checkout.
+pending_migrations() {
+  ssh "$DEPLOY_SSH_HOST" "$(as_app_user "
+    set -euo pipefail
+    cd '$APP_DIR'
+    git fetch --quiet origin '$BRANCH' 2>/dev/null
+
+    incoming=\$(git ls-tree -d --name-only 'origin/$BRANCH' prisma/migrations/ 2>/dev/null \
+      | sed 's|prisma/migrations/||' | grep -E '^[0-9]' | sort || true)
+
+    url=\$(grep -E '^DIRECT_URL=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\"' || true)
+    if [ -z \"\$url\" ]; then echo '__NO_DIRECT_URL__'; exit 0; fi
+
+    applied=\$(psql \"\$url\" -tAc \\
+      'SELECT migration_name FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL' \
+      2>/dev/null | sed '/^\$/d' | sort || true)
+    if [ -z \"\$applied\" ]; then echo '__NO_DB__'; exit 0; fi
+
+    comm -23 <(echo \"\$incoming\") <(echo \"\$applied\")
+  ")" 2>/dev/null || true
+}
+
+# --- check-migrations ---------------------------------------------------------
+if [[ $CHECK_MIGRATIONS -eq 1 ]]; then
+  [[ -n "$ENV_NAME" ]] || die "--check-migrations needs --env <dev|preprod|prod>"
+  case "$ENV_NAME" in
+    dev)     APP_DIR="$DEV_APP_DIR" ;;
+    preprod) APP_DIR="$PREPROD_APP_DIR" ;;
+    prod)    APP_DIR="$PROD_APP_DIR" ;;
+    *)       die "Invalid --env '$ENV_NAME'" ;;
+  esac
+  PENDING="$(pending_migrations)"
+  if [[ "$PENDING" == *__NO_DIRECT_URL__* ]]; then
+    warn "Could not read DIRECT_URL from $APP_DIR/.env — cannot tell what is pending."
+    exit 1
+  fi
+  if [[ "$PENDING" == *__NO_DB__* ]]; then
+    warn "Could not reach the $ENV_NAME database — cannot tell what is pending."
+    exit 1
+  fi
+  if [[ -z "${PENDING//[[:space:]]/}" ]]; then
+    ok "No pending migrations for '$ENV_NAME' — this deploy contains no schema change."
+    exit 0
+  fi
+  warn "Pending migration(s) for '$ENV_NAME':"
+  printf '%s\n' "$PENDING" | sed 's/^/    /'
+  exit 10
 fi
 
 [[ -n "$ENV_NAME" ]] || die "--env is required (dev|preprod|prod). Try --inspect first."
@@ -139,8 +203,22 @@ if [[ $RESTART_ONLY -eq 0 ]]; then
         [[ "$a" == "migrate" ]] || { info "Aborted."; exit 1; }
       fi
     else
-      warn "Prod deploy WITHOUT migrations (pass --migrate to include them)."
-      warn "If this commit needs a schema change, the app will fail against the old schema."
+      # "If this commit needs a schema change" used to be left to the operator to
+      # know. It is knowable, so check rather than warn vaguely.
+      PENDING="$(pending_migrations)"
+      if [[ "$PENDING" == *__NO_* ]]; then
+        warn "Prod deploy WITHOUT migrations, and it was not possible to check whether any"
+        warn "are pending (database unreachable, or DIRECT_URL missing from .env)."
+      elif [[ -z "${PENDING//[[:space:]]/}" ]]; then
+        info "No pending migrations — this commit contains no schema change."
+      else
+        warn "Prod deploy WITHOUT migrations, but these ARE pending:"
+        printf '%s\n' "$PENDING" | sed 's/^/    /'
+        warn "Deploying now leaves the app on the old schema and it will error."
+        warn "Re-run with --migrate to include them."
+        [[ $ASSUME_YES -eq 1 || $DRY_RUN -eq 1 ]] \
+          || { read -r -p "Continue anyway? [y/N] " a; [[ "$a" =~ ^[Yy]$ ]] || { info "Aborted."; exit 1; }; }
+      fi
     fi
   else
     RUN_MIGRATE=1

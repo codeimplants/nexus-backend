@@ -100,20 +100,36 @@ REM --- Migrations -------------------------------------------------------------
 REM dev and preprod always migrate - that is where a migration gets rehearsed.
 REM prod only migrates when asked, because `migrate deploy` alters a live
 REM database and redeploying an older commit does NOT roll it back.
+REM
+REM This used to ask "does this deploy include a schema change?" and trust the
+REM answer. It is a memory test with a bad failure mode: answering no when it
+REM does leaves the app on the old schema and it errors. --check-migrations
+REM reads the answer off the server instead (exit 0 = none, 10 = some pending).
 set "MIGRATEFLAG="
 if "!ENVNAME!"=="prod" (
     echo.
-    echo  Does this deploy include a database schema change?
+    echo  Checking the server for pending migrations...
     echo.
-    echo    Answer y only if new files were added under prisma/migrations.
-    echo    Answering n on a deploy that needs one leaves the app running
-    echo    against the old schema, and it will error.
+    "%BASH_EXE%" scripts/deploy.sh --env prod --check-migrations
+    set "MIGCHECK=!ERRORLEVEL!"
     echo.
-    echo    A migration CANNOT be undone by redeploying older code.
-    echo.
-    set "DOMIGRATE="
-    set /p "DOMIGRATE=  Run migrations on PROD? [y/N]: "
-    if /i "!DOMIGRATE!"=="y" set "MIGRATEFLAG=--migrate"
+    if "!MIGCHECK!"=="0" (
+        echo  No schema change in this deploy - migrations will be skipped.
+    ) else if "!MIGCHECK!"=="10" (
+        echo  The migration^(s^) listed above will be applied to the LIVE database.
+        echo  This CANNOT be undone by redeploying older code.
+        echo.
+        set "DOMIGRATE="
+        set /p "DOMIGRATE=  Apply them? [y/N]: "
+        if /i "!DOMIGRATE!"=="y" set "MIGRATEFLAG=--migrate"
+    ) else (
+        echo  Could not check ^(database unreachable, or DIRECT_URL missing^).
+        echo  Answer from what you know about this commit.
+        echo.
+        set "DOMIGRATE="
+        set /p "DOMIGRATE=  Run migrations on PROD? [y/N]: "
+        if /i "!DOMIGRATE!"=="y" set "MIGRATEFLAG=--migrate"
+    )
 )
 
 REM --- Confirm ----------------------------------------------------------------
