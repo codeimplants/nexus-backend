@@ -2,13 +2,24 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// NEVER run `prisma db push` against any environment. It writes schema changes
+// straight to the database and records nothing in prisma/migrations, so the
+// migration history silently stops reproducing the real schema. Four tables
+// (Device, AppAnalytics, StoreUrl, MaintenanceMode) and a dozen columns were
+// lost that way on Neon; rebuilding from scratch failed until 20260723000000
+// and 20260814000000 reconstructed them by hand. Use `prisma migrate dev`.
+//
+// To check the chain still reproduces the schema (empty output == correct):
+//   npx prisma migrate diff --from-schema-datasource prisma/schema.prisma \
+//                           --to-schema-datamodel  prisma/schema.prisma --script
 datasource db {
   provider = "postgresql"
-  // Pooled Neon endpoint (-pooler) for application queries.
+  // Self-hosted PostgreSQL 16 on the VPS, reachable on localhost only.
   url       = env("DATABASE_URL")
-  // Unpooled endpoint for migrations. Prisma takes advisory locks, which do not
-  // work reliably through a connection pooler — `migrate deploy` can hang or fail
-  // against the pooled host.
+  // Migrations connection. There is no pooler in front of local Postgres, so
+  // this is the SAME endpoint as url — it stays a separate variable because
+  // Prisma's advisory locks need a non-pooled connection, and a pooler may be
+  // introduced later without touching this file.
   // REQUIRED: there is no fallback. Every .env (local and each VPS checkout)
   // must define DIRECT_URL or the schema fails to load with P1012.
   directUrl = env("DIRECT_URL")
