@@ -71,11 +71,19 @@ export class FeatureFlagsService {
     }
   }
 
-  async update(id: string, dto: UpdateFeatureFlagDto) {
-    const existing = await this.prisma.featureFlag.findUnique({ where: { id } });
+  /**
+   * Both writes are scoped by appId as well as flag id, so a flag belonging to
+   * another app cannot be reached through a URL for an app you do have access to.
+   * AppAccessGuard authorises the app in the path; it cannot know whether the flag
+   * in the path belongs to it, so that check has to live here.
+   */
+  async update(appId: string, flagId: string, dto: UpdateFeatureFlagDto) {
+    const existing = await this.prisma.featureFlag.findFirst({
+      where: { id: flagId, appId },
+    });
     if (!existing) throw new NotFoundException('Feature flag not found');
     try {
-      return await this.prisma.featureFlag.update({ where: { id }, data: dto });
+      return await this.prisma.featureFlag.update({ where: { id: flagId }, data: dto });
     } catch (error: any) {
       if (error?.code === 'P2002') {
         throw new ConflictException(
@@ -86,10 +94,12 @@ export class FeatureFlagsService {
     }
   }
 
-  async remove(id: string) {
-    const existing = await this.prisma.featureFlag.findUnique({ where: { id } });
+  async remove(appId: string, flagId: string) {
+    const existing = await this.prisma.featureFlag.findFirst({
+      where: { id: flagId, appId },
+    });
     if (!existing) throw new NotFoundException('Feature flag not found');
-    await this.prisma.featureFlag.delete({ where: { id } });
+    await this.prisma.featureFlag.delete({ where: { id: flagId } });
     return { deleted: true };
   }
 

@@ -40,13 +40,30 @@ export class FeatureFlagsController {
     return this.flags.create(appId, body);
   }
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() body: UpdateFeatureFlagDto) {
-    return this.flags.update(id, body);
+  /**
+   * The route param is `flagId`, NOT `id`, and that is load-bearing.
+   *
+   * AppAccessGuard resolves the app as `req.params.id ?? req.params.appId`.
+   * Naming this param `id` hands it the *flag* id, which it looks up in the App
+   * table, fails to find, and rejects with "App not found" — a 404 on every update
+   * and delete, thrown before the handler ever runs. That shipped: flags could be
+   * created and listed but never changed or removed.
+   *
+   * With `flagId`, `params.id` is undefined and the guard falls through to
+   * `params.appId`, which is what it was always meant to check. The URL shape is
+   * unchanged, so no client needs updating.
+   */
+  @Patch(':flagId')
+  update(
+    @Param('appId') appId: string,
+    @Param('flagId') flagId: string,
+    @Body() body: UpdateFeatureFlagDto,
+  ) {
+    return this.flags.update(appId, flagId, body);
   }
 
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.flags.remove(id);
+  @Delete(':flagId')
+  remove(@Param('appId') appId: string, @Param('flagId') flagId: string) {
+    return this.flags.remove(appId, flagId);
   }
 }
