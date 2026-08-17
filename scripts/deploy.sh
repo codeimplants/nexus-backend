@@ -26,9 +26,17 @@
 # Each environment runs from its own checkout, so a build for one cannot affect
 # another. Deploying to dev or preprod is a genuine rehearsal for prod.
 #
-#   nexus-backend-prod     NODE_ENV=prod     PORT=6000
+#   nexus-backend-prod     NODE_ENV=prod     PORT=6003
 #   nexus-backend-preprod  NODE_ENV=preprod  PORT=6002
 #   nexus-backend-dev      NODE_ENV=dev      PORT=6001
+#
+# Prod is 6003, NOT 6000. This comment said 6000 until 2026-08-17, while
+# deploy.config.sh had 6003 all along — the config is what runs, so the script
+# always deployed correctly and only the documentation lied. That still mattered:
+# 6000 is a different, older version-control service that shipped binaries depend
+# on (see CLAUDE.md), so anyone reading this during an incident would have gone
+# looking at the wrong process, or worse, restarted it. The ports are defined once
+# in deploy.config.sh and must stay in sync with ecosystem.config.js.
 #
 # DATABASE MIGRATIONS
 #   dev/preprod : `prisma migrate deploy` runs automatically — rehearse there first.
