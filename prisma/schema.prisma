@@ -93,6 +93,41 @@ model App {
   maintenanceMode     MaintenanceMode?
   storeUrls           StoreUrl[]
   collaborators       AppCollaborator[]
+  featureFlags        FeatureFlag[]
+}
+
+/// A named switch an app reads at launch, delivered in the /sdk/version/check
+/// response so it reaches published binaries with no release.
+///
+/// Nexus can only turn a feature OFF. The app treats a flag as authoritative only
+/// when it is `false`; the product's own config decides whether a feature is on in
+/// the first place. One clear rule beats two systems that can both win, where a
+/// flag set here and forgotten makes the product's own toggle look broken.
+///
+/// Keys are owned by each app, not enumerated here, so a new flag needs no
+/// migration — an app ignores keys it does not recognise.
+model FeatureFlag {
+  id     String @id @default(uuid())
+  appId  String
+  /// The app's flag key, e.g. "tutorials".
+  key    String
+  /// Which platform this row applies to: android | ios | web, or "all".
+  ///
+  /// A plain string defaulting to "all" rather than a nullable column, because
+  /// Postgres treats NULLs as distinct in a unique index — nullable would happily
+  /// accept two "every platform" rows for the same key and then serve whichever
+  /// the query happened to return first.
+  platform    String   @default("all")
+  isEnabled   Boolean  @default(true)
+  /// Why this flag exists, for whoever finds it switched off later.
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@unique([appId, key, platform])
+  @@index([appId])
 }
 
 model VersionRule {

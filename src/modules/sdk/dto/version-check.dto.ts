@@ -73,6 +73,23 @@ export interface VersionCheckResponse {
     web?: string;
   };
 
+  /**
+   * Feature switches for this app and platform, as `{ key: boolean }`.
+   *
+   * A new response field, which the frozen contract explicitly permits — and the
+   * reason flags can reach already-published binaries at all: the SDK sets
+   * `VCDecision.raw` to this entire response, so a client reads
+   * `decision.raw.featureFlags` with no SDK release.
+   *
+   * Omitted entirely when the app has no flags, rather than sent as `{}`, so the
+   * payload every shipped binary parses does not grow for apps not using them.
+   *
+   * Nexus can only turn a feature OFF: clients treat a flag as authoritative when
+   * it is `false` and otherwise fall back to their own configuration. Absent data
+   * must never disable anything — see the client-side registry for why.
+   */
+  featureFlags?: Record<string, boolean>;
+
   // Metadata
   deviceTracked?: boolean;
   analytics?: boolean;

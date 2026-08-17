@@ -5,12 +5,16 @@ import { VersionCheckDto, VersionCheckResponse } from './dto/version-check.dto';
 import { IngestEventsDto, SdkEventDto, SdkEventNames } from './dto/event.dto';
 import { IdentifyDto } from './dto/identify.dto';
 import { DeviceRegisterDto } from './dto/device.dto';
+import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 
 @Injectable()
 export class SdkService {
     private readonly logger = new Logger(SdkService.name);
 
-    constructor(private prisma: PrismaService) { }
+    constructor(
+        private prisma: PrismaService,
+        private featureFlags: FeatureFlagsService,
+    ) { }
 
     /** Validate an API key and return the owning app (id only). Throws on invalid/inactive. */
     private async requireApp(apiKey: string): Promise<{ id: string }> {
@@ -195,9 +199,24 @@ export class SdkService {
                 this.logger.error('Failed to log analytics', err);
             });
 
-            // 7. Return response
+            // 7. Feature flags for this app and platform.
+            //
+            // Deliberately best-effort and non-fatal. This endpoint's job is
+            // force-update and the kill switch — the only remedy for a bad release
+            // — so a failure while reading a convenience field must never take it
+            // down. A flag that fails to load is simply absent, and clients read
+            // absent as "use your own default", never as "off".
+            let featureFlags: Record<string, boolean> | undefined;
+            try {
+                featureFlags = await this.featureFlags.forSdk(app.id, data.platform);
+            } catch (err) {
+                this.logger.error('Failed to read feature flags; serving without them', err);
+            }
+
+            // 8. Return response
             return {
                 ...result,
+                ...(featureFlags ? { featureFlags } : {}),
                 deviceTracked: !!data.deviceId,
                 analytics: true,
             } as VersionCheckResponse;
