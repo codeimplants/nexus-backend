@@ -10,6 +10,33 @@ export interface AccessContext {
 
 export type UsageGranularity = 'day' | 'week' | 'month' | 'year';
 
+/**
+ * Orders version strings newest-first, comparing each dotted segment numerically
+ * so 1.0.9 sorts below 1.0.10 rather than above it as a string compare would.
+ * Unknown (null) versions sort last — they are the least actionable rows.
+ */
+function compareVersionsDesc(a: string | null, b: string | null): number {
+    if (a === b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+
+    const left = a.split('.');
+    const right = b.split('.');
+    for (let i = 0; i < Math.max(left.length, right.length); i++) {
+        const l = Number(left[i] ?? 0);
+        const r = Number(right[i] ?? 0);
+        // A non-numeric segment (e.g. "1.0.16-rc1") falls back to a string
+        // compare for that segment rather than NaN-ing the whole comparison.
+        if (Number.isNaN(l) || Number.isNaN(r)) {
+            const cmp = (right[i] ?? '').localeCompare(left[i] ?? '');
+            if (cmp !== 0) return cmp;
+            continue;
+        }
+        if (l !== r) return r - l;
+    }
+    return 0;
+}
+
 @Injectable()
 export class AnalyticsService {
     constructor(
@@ -115,7 +142,15 @@ export class AnalyticsService {
     async getAudience(appId: string, days = 30) {
         const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-        const [installedDevices, loggedInUsers, activeUsers, platformRows, modelRows, registrations] =
+        const [
+            installedDevices,
+            loggedInUsers,
+            activeUsers,
+            platformRows,
+            modelRows,
+            appVersionRows,
+            registrations,
+        ] =
             await Promise.all([
                 this.prisma.device.count({ where: { appId } }),
                 this.prisma.endUser.count({ where: { appId } }),
@@ -127,6 +162,14 @@ export class AnalyticsService {
                 }),
                 this.prisma.device.groupBy({
                     by: ['platform', 'make', 'model'],
+                    where: { appId },
+                    _count: { id: true },
+                }),
+                // Which build each install is actually running — the basis for
+                // "who is still on the version with the bug" and for deciding
+                // whether a force-update rule is worth setting.
+                this.prisma.device.groupBy({
+                    by: ['platform', 'appVersion'],
                     where: { appId },
                     _count: { id: true },
                 }),
@@ -151,6 +194,20 @@ export class AnalyticsService {
                     count: r._count.id,
                 }))
                 .sort((a, b) => b.count - a.count),
+            // Newest build first, so the tail of old installs reads down the list.
+            // appVersion is nullable: devices seen before the column existed, and
+            // any install whose first /sdk/device call predates a resolved key.
+            appVersionSplit: appVersionRows
+                .map((r) => ({
+                    platform: r.platform,
+                    appVersion: r.appVersion,
+                    count: r._count.id,
+                }))
+                .sort(
+                    (a, b) =>
+                        a.platform.localeCompare(b.platform) ||
+                        compareVersionsDesc(a.appVersion, b.appVersion),
+                ),
             registrationTimeline: registrations.map((r) => ({
                 day: r.day,
                 count: Number(r.count),
