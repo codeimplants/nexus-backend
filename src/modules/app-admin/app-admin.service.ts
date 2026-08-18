@@ -199,14 +199,33 @@ export class AppAdminService {
         for (const row of rows as Record<string, any>[]) {
             const id = row?._id ?? row?.id ?? row?.userId;
             if (!id) continue;
-            const phone = row.phone ?? row.mobile ?? row.phoneNumber;
             map.set(String(id), {
-                phone: phone === undefined || phone === null ? null : String(phone),
-                name: row.name ?? row.shopName ?? row.fullName ?? null,
-                registrationDate: row.registrationDate ?? row.createdAt ?? null,
+                phone: this.firstText(row.phone, row.mobile, row.phoneNumber),
+                name: this.firstText(row.name, row.shopName, row.fullName),
+                registrationDate: this.firstText(row.registrationDate, row.createdAt),
             });
         }
         return map;
+    }
+
+    /**
+     * First of the candidate fields carrying actual text, as a trimmed string.
+     *
+     * Empty strings count as absent, not as a value. Sonebill's user list sends
+     * shopName: '' for a shop that never filled in its details, and a plain ??
+     * chain accepts that '' and hands the dashboard a name that renders as an
+     * empty cell — strictly worse than the pseudonymous id it replaced, because
+     * a blank reads as a broken table rather than an unresolved user. Any app
+     * backend can send '' for "not set", so this belongs here in the adapter
+     * rather than in each screen that displays a profile.
+     */
+    private firstText(...candidates: unknown[]): string | null {
+        for (const candidate of candidates) {
+            if (candidate === undefined || candidate === null) continue;
+            const text = String(candidate).trim();
+            if (text) return text;
+        }
+        return null;
     }
 
     /** Single outbound path to an app backend, shared by the proxy and enrichment. */

@@ -1,11 +1,20 @@
 import { BadRequestException, Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
-import { AnalyticsService, UsageGranularity } from './analytics.service';
+import { AnalyticsService, EndUserSort, SortOrder, UsageGranularity } from './analytics.service';
 import { FirebaseAnalyticsService } from '../firebase-analytics/firebase-analytics.service';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { AppAccessGuard } from '../../common/guards/app-access.guard';
 import { User } from '../../common/decorators/user.decorator';
 
 const GRANULARITIES: UsageGranularity[] = ['day', 'week', 'month', 'year'];
+const END_USER_SORTS: EndUserSort[] = [
+    'lastActive',
+    'registered',
+    'name',
+    'phone',
+    'timeSpent',
+    'opens',
+    'activeDays',
+];
 
 @Controller('admin/analytics')
 @UseGuards(JwtGuard)
@@ -34,6 +43,14 @@ export class AnalyticsController {
         return this.analytics.getAudience(appId, days ? Number(days) : undefined);
     }
 
+    /** Distinct users per day over the window — the DAU chart behind the
+     * rolling "Active (30d)" figure that /audience returns. */
+    @Get('apps/:appId/active-series')
+    @UseGuards(AppAccessGuard)
+    getActiveSeries(@Param('appId') appId: string, @Query('days') days?: string) {
+        return this.analytics.getActiveSeries(appId, days ? Number(days) : undefined);
+    }
+
     @Get('apps/:appId/growth')
     @UseGuards(AppAccessGuard)
     getGrowth(@Param('appId') appId: string, @Query('churnDays') churnDays?: string) {
@@ -48,12 +65,24 @@ export class AnalyticsController {
         @Query('offset') offset?: string,
         @Query('days') days?: string,
         @Query('inactiveDays') inactiveDays?: string,
+        @Query('search') search?: string,
+        @Query('sort') sort?: string,
+        @Query('order') order?: string,
     ) {
+        // An unknown sort falls back to the default rather than 400ing: the
+        // column set is a UI detail, and a stale bookmark should still render
+        // the table instead of an error.
+        const column = END_USER_SORTS.includes(sort as EndUserSort)
+            ? (sort as EndUserSort)
+            : undefined;
         return this.analytics.getUsers(appId, {
             limit: limit ? Number(limit) : undefined,
             offset: offset ? Number(offset) : undefined,
             days: days ? Number(days) : undefined,
             inactiveDays: inactiveDays ? Number(inactiveDays) : undefined,
+            search,
+            sort: column,
+            order: order === 'asc' || order === 'desc' ? (order as SortOrder) : undefined,
         });
     }
 
