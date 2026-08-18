@@ -40,6 +40,8 @@ export interface EnrichedEndUser {
     totalDurationSec: number;
     totalOpens: number;
     activeDays: number;
+    /** Whether the app's backend actually returned a profile for this id. */
+    resolved: boolean;
 }
 
 /**
@@ -356,6 +358,10 @@ export class AnalyticsService {
                 totalDurationSec: r?._sum.totalDurationSec ?? 0,
                 totalOpens: r?._sum.openCount ?? 0,
                 activeDays: r?._count.date ?? 0,
+                // Distinguishes "the shop never set a name" from "this id is not
+                // a shop at all". Both show no name, but only the second means
+                // the row can never resolve, so the UI must not label them alike.
+                resolved: !!p,
             };
         });
 
