@@ -39,6 +39,18 @@ export class AppAdminController {
         return this.appAdmin.purgeUsers(id, body, user);
     }
 
+    /**
+     * Drop telemetry for users the app's backend has already deleted on its own
+     * side. ADMIN-only. Distinct from users/purge, which asks the backend to do
+     * the deleting — here it has already happened, so that DELETE would 404.
+     */
+    @Post('users/purge-deleted')
+    @HttpCode(200)
+    @Roles('ADMIN')
+    purgeDeletedUsers(@Param('id') id: string, @Body() body: { dryRun?: boolean }) {
+        return this.appAdmin.purgeDeletedUsers(id, body ?? {});
+    }
+
     @All('backend/*')
     proxy(@Param('id') id: string, @Req() req: Request, @Body() body: unknown) {
         // Express 4 exposes the wildcard segment as params[0].

@@ -111,6 +111,7 @@ export class AppAdminService {
         }
 
         let deleted = 0;
+        let alreadyGone = 0;
         const failures: { externalUserId: string; reason: string }[] = [];
 
         for (const target of targets) {
@@ -126,6 +127,16 @@ export class AppAdminService {
                 await this.prisma.endUser.delete({ where: { id: target.id } });
                 deleted += 1;
             } catch (error) {
+                // A 404 is not a failure here: the app backend is telling us the
+                // user is already gone, which is the state this call was trying to
+                // reach. Counting it as an error stranded exactly those rows —
+                // every attempt to clear a user deleted inside the app failed, and
+                // the row could not be removed from the dashboard at all.
+                if (this.statusOf(error) === 404) {
+                    await this.prisma.endUser.delete({ where: { id: target.id } });
+                    alreadyGone += 1;
+                    continue;
+                }
                 failures.push({ externalUserId: target.externalUserId, reason: String(error) });
             }
         }
@@ -143,6 +154,7 @@ export class AppAdminService {
                         appId,
                         requested: targets.length,
                         deleted,
+                        alreadyGone,
                         failed: failures.length,
                         inactiveDays: opts.inactiveDays ?? null,
                     },
@@ -150,7 +162,135 @@ export class AppAdminService {
             })
             .catch((err) => this.logger.warn(`Audit log for purge failed: ${String(err)}`));
 
-        return { matched: targets.length, deleted, failed: failures.length, failures };
+        return {
+            matched: targets.length,
+            deleted,
+            // Removed from Nexus without an app-side delete, because the app had
+            // already deleted them. Reported separately so "purged 2" never
+            // implies the app backend did any work for those two.
+            alreadyGone,
+            failed: failures.length,
+            failures,
+        };
+    }
+    /**
+     * HTTP status carried by an error from call(), or null if it is not one.
+     * Nest's HttpException keeps it on getStatus(); anything else (a network
+     * failure, a thrown string) has no status and must not be read as one.
+     */
+    private statusOf(error: unknown): number | null {
+        if (error instanceof HttpException) return error.getStatus();
+        return null;
+    }
+
+    /**
+     * Drop the telemetry of users the app's own backend has already deleted.
+     *
+     * Works from positive evidence only: a row goes when its externalUserId
+     * appears in the app backend's deleted list, never because a profile lookup
+     * failed to mention it. That distinction is the whole safety property here.
+     * fetchUserProfiles swallows its own errors and returns an empty map, so
+     * "this user is gone" and "Sonebill timed out" look identical from the
+     * outside — purging on absence would empty the table on one bad request.
+     * Purging on presence degrades to doing nothing.
+     *
+     * Only Nexus rows are removed. The app already deleted its own copy, which
+     * is why this exists at all: purgeUsers() calls the backend's DELETE and
+     * would 404 on a user that is no longer there.
+     */
+    async purgeDeletedUsers(appId: string, opts: { dryRun?: boolean } = {}) {
+        const app = await this.prisma.app.findUnique({
+            where: { id: appId },
+            select: {
+                backendBaseUrl: true,
+                backendServiceToken: true,
+                backendDeletedUsersPath: true,
+            },
+        });
+        if (!app) throw new NotFoundException('App not found');
+        if (!app.backendBaseUrl || !app.backendDeletedUsersPath) {
+            throw new BadRequestException(
+                'This app has no deleted-users endpoint configured (backendBaseUrl + backendDeletedUsersPath)',
+            );
+        }
+
+        // Deliberately not caught: unlike enrichment, where a failed lookup just
+        // means "show ids this time", a failure here must abort loudly rather
+        // than report "0 purged" and look like a clean run on a broken link.
+        const payload = await this.call(
+            { baseUrl: app.backendBaseUrl, token: this.decryptToken(app.backendServiceToken) },
+            'GET',
+            app.backendDeletedUsersPath,
+            {},
+            undefined,
+        );
+
+        const deletedIds = this.toDeletedIdSet(payload);
+        if (deletedIds.size === 0) {
+            return { reportedDeleted: 0, matched: 0, purged: 0, dryRun: !!opts.dryRun };
+        }
+
+        const targets = await this.prisma.endUser.findMany({
+            where: { appId, externalUserId: { in: [...deletedIds] } },
+            select: { id: true, externalUserId: true },
+        });
+
+        if (opts.dryRun) {
+            return {
+                reportedDeleted: deletedIds.size,
+                matched: targets.length,
+                purged: 0,
+                dryRun: true,
+                targets: targets.map((t) => t.externalUserId),
+            };
+        }
+
+        // DailyUsage and the device link cascade from EndUser (see schema).
+        const result = await this.prisma.endUser.deleteMany({
+            where: { id: { in: targets.map((t) => t.id) } },
+        });
+
+        this.logger.log(
+            `Purged ${result.count} deleted user(s) from app ${appId} (${deletedIds.size} reported deleted by its backend)`,
+        );
+
+        return {
+            reportedDeleted: deletedIds.size,
+            matched: targets.length,
+            purged: result.count,
+            dryRun: false,
+        };
+    }
+
+    /**
+     * Ids from an app backend's deleted-user list.
+     *
+     * originalDukandarId comes first because a deletion log's own _id is the id
+     * of the log entry, not of the user it describes — taking the wrong one
+     * would match nothing, which is the quiet failure mode this ordering avoids.
+     */
+    private toDeletedIdSet(payload: unknown): Set<string> {
+        const rows = Array.isArray(payload)
+            ? payload
+            : Array.isArray((payload as any)?.data)
+                ? (payload as any).data
+                : Array.isArray((payload as any)?.users)
+                    ? (payload as any).users
+                    : [];
+
+        const ids = new Set<string>();
+        for (const row of rows as Record<string, any>[]) {
+            const id =
+                row?.originalDukandarId ??
+                row?.originalUserId ??
+                row?.userId ??
+                row?.id ??
+                row?._id;
+            if (id === undefined || id === null) continue;
+            const text = String(id).trim();
+            if (text) ids.add(text);
+        }
+        return ids;
     }
 
     /**

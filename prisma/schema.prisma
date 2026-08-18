@@ -77,6 +77,14 @@ model App {
   // own deletion process runs there (cascade + retention of basic details).
   // e.g. "/api/dukandar"
   backendDeleteUserPath String?
+  // Path returning the users this app has ALREADY deleted on its own side, so
+  // Nexus can drop their telemetry rows. Positive evidence on purpose: rows are
+  // removed only when they appear in this list, never because a profile lookup
+  // failed to return them — fetchUserProfiles swallows its own errors, so
+  // "absent" and "the backend timed out" are indistinguishable and inferring
+  // deletion from absence would empty the table on one bad request.
+  // e.g. "/api/dukandar/deleted-log"
+  backendDeletedUsersPath String?
   // GA4 property id for this app's own Firebase Analytics. Read access must be
   // granted to Nexus's shared reporting service account (see
   // GA4_SERVICE_ACCOUNT_KEY_PATH) via Firebase Console > Property Access
