@@ -11,6 +11,7 @@ const END_USER_SORTS: EndUserSort[] = [
     'registered',
     'name',
     'phone',
+    'appVersion',
     'timeSpent',
     'opens',
     'activeDays',

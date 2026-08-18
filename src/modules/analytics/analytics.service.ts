@@ -16,6 +16,7 @@ export type EndUserSort =
     | 'registered'
     | 'name'
     | 'phone'
+    | 'appVersion'
     | 'timeSpent'
     | 'opens'
     | 'activeDays';
@@ -37,6 +38,8 @@ export interface EnrichedEndUser {
     lastActiveAt: Date;
     phone: string | null;
     name: string | null;
+    /** Build on the user's most recently seen device, null if none reported one. */
+    appVersion: string | null;
     totalDurationSec: number;
     totalOpens: number;
     activeDays: number;
@@ -342,6 +345,25 @@ export class AnalyticsService {
         ]);
         const byUser = new Map(rollups.map((r) => [r.endUserId, r]));
 
+        // Which build each user is actually on. Version lives on Device, not on
+        // EndUser, and someone can have several (a phone and the web app), so
+        // this takes the most recently seen device that reported a version —
+        // "what they were last running", which is what an upgrade chase needs.
+        // Devices with no version at all are skipped rather than treated as the
+        // answer, or a single unreported web session would hide a known build.
+        const devices = await this.prisma.device.findMany({
+            where: { appId, endUserId: { in: users.map((u) => u.id) } },
+            select: { endUserId: true, appVersion: true },
+            orderBy: { lastCheckIn: 'desc' },
+        });
+        const versionByUser = new Map<string, string>();
+        for (const device of devices) {
+            if (!device.endUserId || !device.appVersion) continue;
+            if (!versionByUser.has(device.endUserId)) {
+                versionByUser.set(device.endUserId, device.appVersion);
+            }
+        }
+
         let rows: EnrichedEndUser[] = users.map((u) => {
             const r = byUser.get(u.id);
             const p = profiles.get(u.externalUserId);
@@ -355,6 +377,7 @@ export class AnalyticsService {
                 lastActiveAt: u.lastActiveAt,
                 phone: p?.phone ?? null,
                 name: p?.name ?? null,
+                appVersion: versionByUser.get(u.id) ?? null,
                 totalDurationSec: r?._sum.totalDurationSec ?? 0,
                 totalOpens: r?._sum.openCount ?? 0,
                 activeDays: r?._count.date ?? 0,
@@ -418,6 +441,17 @@ export class AnalyticsService {
                     // Numeric collation so phone 9 sorts before 10, and so shop
                     // names leading with a number order the way a human reads.
                     return left.localeCompare(right, undefined, { numeric: true }) * dir;
+                }
+                case 'appVersion': {
+                    const left = a.appVersion;
+                    const right = b.appVersion;
+                    if (!left && !right) return 0;
+                    if (!left) return 1;
+                    if (!right) return -1;
+                    // Segment-wise numeric compare, so 1.0.9 sorts below 1.0.10
+                    // rather than above it as a string compare would. The helper
+                    // is newest-first, hence the inversion for ascending.
+                    return compareVersionsDesc(left, right) * (order === 'desc' ? 1 : -1);
                 }
                 case 'registered':
                     return (this.epoch(a.registeredAt) - this.epoch(b.registeredAt)) * dir;
