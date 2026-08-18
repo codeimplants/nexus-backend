@@ -7,7 +7,7 @@ import {
     Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
-import * as bcrypt from 'bcrypt';
+import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { JwtService } from '@nestjs/jwt';
 

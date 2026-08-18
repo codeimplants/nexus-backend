@@ -254,7 +254,32 @@ npx prisma migrate deploy"
 git fetch --quiet origin '$BRANCH'
 git reset --hard 'origin/$BRANCH'
 echo 'now at: '\$(git log -1 --oneline)
-npm ci
+# npm ci deletes node_modules BEFORE it fetches anything, so a failed download
+# leaves the checkout with no dependencies at all. The running pm2 process keeps
+# serving from memory and looks healthy, but the next restart -- a deploy, a
+# reboot, an OOM kill -- finds nothing to load. That window opened twice on
+# 18 Aug 2026 when a prebuilt binary download to GitHub timed out.
+#
+# So: move the working tree aside, and put it back if the install does not
+# complete. Retried because these failures are transient CDN timeouts, not
+# anything this box can fix -- it has no compiler, so a source fallback is not
+# available to any native module.
+if [ -d node_modules ]; then rm -rf node_modules.prev; mv node_modules node_modules.prev; fi
+npm_ci_ok=0
+for attempt in 1 2 3; do
+  echo \"--- npm ci (attempt \$attempt/3) ---\"
+  if npm ci; then npm_ci_ok=1; break; fi
+  echo 'npm ci failed; retrying in 5s'
+  sleep 5
+done
+if [ \$npm_ci_ok -ne 1 ]; then
+  echo 'ERROR: npm ci failed 3 times — restoring the previous node_modules and aborting'
+  rm -rf node_modules
+  if [ -d node_modules.prev ]; then mv node_modules.prev node_modules; fi
+  exit 1
+fi
+rm -rf node_modules.prev
+
 npx prisma generate
 $MIGRATE_STEP
 npm run build"
