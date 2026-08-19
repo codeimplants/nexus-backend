@@ -41,9 +41,20 @@ export class SdkService {
      */
     private unidentifiedVersionChecks = 0;
 
+    /**
+     * Version checks whose reported currentVersion could not be trusted, counted
+     * since boot. Non-zero means some build in the wild is misreporting its own
+     * version, and every version rule is silently doing nothing for it — see
+     * VersionEngine.trustReportedVersion().
+     */
+    private untrustedVersionChecks = 0;
+
     /** Snapshot for the dashboard's misconfiguration warnings. */
-    getDiagnostics(): { unidentifiedVersionChecks: number } {
-        return { unidentifiedVersionChecks: this.unidentifiedVersionChecks };
+    getDiagnostics(): { unidentifiedVersionChecks: number; untrustedVersionChecks: number } {
+        return {
+            unidentifiedVersionChecks: this.unidentifiedVersionChecks,
+            untrustedVersionChecks: this.untrustedVersionChecks,
+        };
     }
 
     /**
@@ -192,6 +203,24 @@ export class SdkService {
                     maintenanceMode,
                     storeUrl,
                 );
+            }
+
+            // 5b. A rule was in play but the client's own version was not usable,
+            // so no update was served. Logged loudly and rate-limited, because the
+            // visible symptom on the device is the opposite of the cause: the app
+            // looks fine, while a rule that reads as active in the dashboard is
+            // quietly reaching nobody on that platform.
+            const untrustedVersion = (result as { untrustedVersion?: string }).untrustedVersion;
+            if (untrustedVersion) {
+                this.untrustedVersionChecks += 1;
+                if (this.untrustedVersionChecks % 100 === 1) {
+                    this.logger.warn(
+                        `${this.untrustedVersionChecks} version check(s) since boot were answered NONE ` +
+                        `because the reported version could not be trusted (latest: ${data.platform}/` +
+                        `${data.environment} — ${untrustedVersion}). Version rules cannot reach these ` +
+                        `installs at all; fix version detection in the client build.`,
+                    );
+                }
             }
 
             // 6. Log analytics (async, non-blocking)

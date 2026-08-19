@@ -90,6 +90,18 @@ export interface VersionCheckResponse {
    */
   featureFlags?: Record<string, boolean>;
 
+  /**
+   * Set when a version rule was live but was deliberately not applied, because
+   * the currentVersion the client sent could not be trusted — see
+   * VersionEngine.trustReportedVersion(). Absent on every normal response.
+   *
+   * Additive, which the frozen contract permits, and deliberately sent to the
+   * client rather than only logged: the SDK puts the whole response on
+   * VCDecision.raw, so a build with debug logging on says exactly why it is not
+   * being offered an update. Finding that out took a day the first time.
+   */
+  untrustedVersion?: string;
+
   // Metadata
   deviceTracked?: boolean;
   analytics?: boolean;

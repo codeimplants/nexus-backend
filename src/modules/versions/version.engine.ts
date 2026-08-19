@@ -103,10 +103,37 @@ export class VersionEngine {
 
 
 
+        // 6. GUARD — only act on a reported version we can believe.
+        //
+        // Everything below this point decides whether to nag or lock a user purely
+        // on the version string the client sent. A client that reports the wrong
+        // version therefore gets an update prompt it can never satisfy: it updates,
+        // reports the same wrong version, and is prompted again — with nothing to
+        // install in the store, because it is already up to date. That loop is
+        // unfixable from the user’s side, and fixable from ours only by switching
+        // the rule off for everyone.
+        //
+        // Sonebill iOS 1.0.16 did exactly that. The SDK ships no VCAppInfo native
+        // module for iOS, so its detection fell through to expo-constants, which
+        // returns the *expo app config* version — defaulted from package.json to
+        // "0.0.1" — and not CFBundleShortVersionString. Every iOS install reported
+        // 0.0.1, sat below every rule, and was force-updated on loop.
+        //
+        // So: a version we cannot trust suppresses SOFT/FORCE and nothing else.
+        // Kill switch, maintenance and the explicit blocked list are evaluated
+        // above and stay reachable — they are the remedy for a bad release and
+        // must never depend on the client getting version detection right.
+        const trust = this.trustReportedVersion(context.currentVersion);
+        if (!trust.trusted) {
+            return {
+                status: 'NONE',
+                latestVersion: rule.latestVersion,
+                untrustedVersion: trust.reason,
+            };
+        }
+
         // Handle updates when below latest version but above min version
-        // Version Range Comparisons
-        // Handle updates when below latest version or if current version is missing
-        const isBelowLatest = !context.currentVersion || this.compareVersions(context.currentVersion, rule.latestVersion) < 0;
+        const isBelowLatest = this.compareVersions(context.currentVersion, rule.latestVersion) < 0;
 
         if (isBelowLatest) {
             if (rule.updateType === 'soft') {
@@ -177,6 +204,58 @@ export class VersionEngine {
     }
 
     /**
+     * Decide whether a client-reported version is worth comparing against.
+     *
+     * Only ever used to *suppress* update decisions, never to create one, so
+     * every uncertain case answers "untrusted" and the user is left alone. The
+     * cost of a false negative is one missed update nag; the cost of a false
+     * positive is an install locked out of the app with no way to comply.
+     *
+     * Untrusted when:
+     *  - nothing was sent. The SDK omits currentVersion whenever its detection
+     *    chain comes up empty, which says nothing about how old the install is.
+     *  - no digits survive parsing, so compareVersions() would read it as 0.
+     *  - it is 0.0.x. That is the scaffold default — react-native init writes
+     *    "0.0.1" into package.json, and it is what leaks through when a version
+     *    is read from project metadata instead of from the installed binary.
+     *    Nothing gets through a store review at 0.0.x while a live rule targets
+     *    a real release, so this is a detection failure every time.
+     */
+    static trustReportedVersion(
+        currentVersion?: string,
+    ): { trusted: true } | { trusted: false; reason: string } {
+        if (!currentVersion || !currentVersion.trim()) {
+            return { trusted: false, reason: 'client sent no version' };
+        }
+
+        const parts = currentVersion
+            .replace(/[^0-9.]/g, '')
+            .split('.')
+            .filter((part) => part !== '');
+
+        if (parts.length === 0) {
+            return {
+                trusted: false,
+                reason: `client sent an unparseable version "${currentVersion}"`,
+            };
+        }
+
+        const major = Number(parts[0]);
+        const minor = Number(parts[1] ?? 0);
+
+        if (major === 0 && minor === 0) {
+            return {
+                trusted: false,
+                reason:
+                    `client reported the scaffold placeholder version "${currentVersion}" — it is ` +
+                    `reading its version from project metadata, not from the installed binary`,
+            };
+        }
+
+        return { trusted: true };
+    }
+
+    /**
      * Check if rule is active based on start/end dates
      */
     private static isRuleActive(rule: VersionRule): boolean {
@@ -240,9 +319,14 @@ export class VersionEngine {
         // Sort by priority (descending)
         const sortedRules = [...rules].sort((a, b) => b.priority - a.priority);
 
+        // Carried out of the loop so a suppressed decision is still explainable.
+        // Every rule sees the same context, so the first reason is the only one.
+        let untrustedVersion: string | undefined;
+
         // Evaluate each rule in priority order
         for (const rule of sortedRules) {
             const result = this.evaluate(rule, context, maintenanceMode, storeUrl);
+            untrustedVersion ??= (result as { untrustedVersion?: string }).untrustedVersion;
             if (result.status !== 'NONE') {
                 return result;
             }
@@ -252,7 +336,8 @@ export class VersionEngine {
         const topRule = sortedRules.find(r => r.isActive);
         return {
             status: 'NONE',
-            latestVersion: topRule?.latestVersion
+            latestVersion: topRule?.latestVersion,
+            untrustedVersion,
         };
     }
 }
