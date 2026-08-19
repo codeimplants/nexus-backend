@@ -13,6 +13,7 @@ const END_USER_SORTS: EndUserSort[] = [
     'phone',
     'appVersion',
     'timeSpent',
+    'avgSession',
     'opens',
     'activeDays',
 ];

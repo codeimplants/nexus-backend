@@ -8,6 +8,20 @@ export interface AccessContext {
     role: string;
 }
 
+/**
+ * Last 10 digits of a phone, or null if there aren't 10.
+ *
+ * Comparing raw strings does not work here: the app backend may send 9850929690
+ * while the exclusion list holds +91 9850929690, and both are the same handset.
+ * Ten digits is the significant part for Indian numbers, which is what every
+ * app on this platform currently serves.
+ */
+function phoneKey(value: unknown): string | null {
+    if (value === undefined || value === null) return null;
+    const digits = String(value).replace(/\D/g, '');
+    return digits.length >= 10 ? digits.slice(-10) : null;
+}
+
 export type UsageGranularity = 'day' | 'week' | 'month' | 'year';
 
 /** Column the engagement table can be ordered by. */
@@ -18,6 +32,7 @@ export type EndUserSort =
     | 'phone'
     | 'appVersion'
     | 'timeSpent'
+    | 'avgSession'
     | 'opens'
     | 'activeDays';
 
@@ -43,6 +58,8 @@ export interface EnrichedEndUser {
     totalDurationSec: number;
     totalOpens: number;
     activeDays: number;
+    /** Mean length of a completed session over the window; null when there were none. */
+    avgSessionSec: number | null;
     /** Whether the app's backend actually returned a profile for this id. */
     resolved: boolean;
 }
@@ -324,7 +341,10 @@ export class AnalyticsService {
             };
         }
 
-        const users = await this.prisma.endUser.findMany({ where });
+        const [users, app] = await Promise.all([
+            this.prisma.endUser.findMany({ where }),
+            this.prisma.app.findUnique({ where: { id: appId }, select: { excludedPhones: true } }),
+        ]);
 
         if (users.length === 0) {
             // No one to enrich, so the app's backend isn't called at all. Report
@@ -381,12 +401,31 @@ export class AnalyticsService {
                 totalDurationSec: r?._sum.totalDurationSec ?? 0,
                 totalOpens: r?._sum.openCount ?? 0,
                 activeDays: r?._count.date ?? 0,
+                // null rather than 0 when nothing completed: "no sessions" is not
+                // "sessions averaging zero seconds", and the table sorts them apart.
+                avgSessionSec:
+                    (r?._sum.openCount ?? 0) > 0
+                        ? Math.round((r?._sum.totalDurationSec ?? 0) / (r?._sum.openCount ?? 1))
+                        : null,
                 // Distinguishes "the shop never set a name" from "this id is not
                 // a shop at all". Both show no name, but only the second means
                 // the row can never resolve, so the UI must not label them alike.
                 resolved: !!p,
             };
         });
+
+        // Internal handsets are dropped after enrichment, not before: the phone
+        // that identifies them only exists on the app backend's profile, so
+        // there is nothing to match against until the profiles are in hand.
+        const excluded = new Set(
+            (app?.excludedPhones ?? []).map((p) => phoneKey(p)).filter((p): p is string => !!p),
+        );
+        if (excluded.size > 0) {
+            rows = rows.filter((row) => {
+                const key = phoneKey(row.phone);
+                return !key || !excluded.has(key);
+            });
+        }
 
         const term = opts.search?.trim().toLowerCase();
         if (term) {
@@ -461,6 +500,16 @@ export class AnalyticsService {
                     return (a.totalOpens - b.totalOpens) * dir;
                 case 'activeDays':
                     return (a.activeDays - b.activeDays) * dir;
+                case 'avgSession': {
+                    // Users with no completed session sink in both directions, as
+                    // name and version already do — no average is not a short one.
+                    const left = a.avgSessionSec;
+                    const right = b.avgSessionSec;
+                    if (left === null && right === null) return 0;
+                    if (left === null) return 1;
+                    if (right === null) return -1;
+                    return (left - right) * dir;
+                }
                 case 'lastActive':
                 default:
                     return (this.epoch(a.lastActiveAt) - this.epoch(b.lastActiveAt)) * dir;
@@ -603,21 +652,36 @@ export class AnalyticsService {
             return { windowDays: days, thresholds: { minMinutes: opts.minMinutes ?? 30, minSessions, minActiveDays }, enriched: false, leads: [] };
         }
 
-        const [users, profiles] = await Promise.all([
+        const [users, profiles, app] = await Promise.all([
             this.prisma.endUser.findMany({
                 where: { id: { in: qualifying.map((r) => r.endUserId) } },
             }),
             // Leads are the one place contact details actually matter — without
             // them you know someone is worth calling but not how to reach them.
             this.appAdmin.fetchUserProfiles(appId),
+            this.prisma.app.findUnique({ where: { id: appId }, select: { excludedPhones: true } }),
         ]);
         const byId = new Map(users.map((u) => [u.id, u]));
+
+        // An internal handset clears every engagement threshold by construction,
+        // so without this the outreach list is topped by numbers nobody should
+        // be calling.
+        const excluded = new Set(
+            (app?.excludedPhones ?? []).map((p) => phoneKey(p)).filter((p): p is string => !!p),
+        );
 
         return {
             windowDays: days,
             thresholds: { minMinutes: opts.minMinutes ?? 30, minSessions, minActiveDays },
             enriched: profiles.size > 0,
-            leads: qualifying.map((r) => {
+            leads: qualifying
+                .filter((r) => {
+                    if (excluded.size === 0) return true;
+                    const u = byId.get(r.endUserId);
+                    const key = phoneKey(u ? profiles.get(u.externalUserId)?.phone : null);
+                    return !key || !excluded.has(key);
+                })
+                .map((r) => {
                 const u = byId.get(r.endUserId);
                 const p = u ? profiles.get(u.externalUserId) : undefined;
                 return {

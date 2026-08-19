@@ -85,6 +85,12 @@ model App {
   // deletion from absence would empty the table on one bad request.
   // e.g. "/api/dukandar/deleted-log"
   backendDeletedUsersPath String?
+  // Phone numbers to hide from Engagement and Leads: internal test handsets, CI
+  // devices and staff accounts. They are real users to the app and must keep
+  // reporting, but they are not customers and distort every behavioural read --
+  // a CI phone was the single heaviest "user" on this app. Matched on the last
+  // 10 digits, so +91 and bare forms are the same number.
+  excludedPhones String[] @default([])
   // GA4 property id for this app's own Firebase Analytics. Read access must be
   // granted to Nexus's shared reporting service account (see
   // GA4_SERVICE_ACCOUNT_KEY_PATH) via Firebase Console > Property Access
