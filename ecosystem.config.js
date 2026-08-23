@@ -20,10 +20,43 @@
 // uses 6000-6002.
 const BASE = '/home/sanskarpandit';
 
+/**
+ * Node 24 (Krypton LTS), stated explicitly rather than inherited.
+ *
+ * These apps used to declare no interpreter, so they ran on whatever `node` PM2
+ * resolved first — the system Node 18, end-of-life since April 2025. Inheriting
+ * like that is not merely outdated, it is invisible: nothing here recorded which
+ * runtime production used, and a change to the system node would have moved all
+ * three onto a new major version at their next restart with no diff to show it.
+ *
+ * Located rather than hardcoded so this works on any account, and it throws
+ * rather than silently falling back — a loud failure at start beats finding out
+ * months later that prod runs on a runtime nobody chose. Verified on 23 Aug 2026
+ * against the existing node_modules: Nest boots and Prisma executes real queries
+ * under 24, so no rebuild is needed (the query engine is a standalone binary,
+ * not a native addon, so the Node ABI change does not apply to it).
+ */
+const os = require('os');
+const path = require('path');
+const fs = require('fs');
+
+const NODE_24_CANDIDATES = [
+  path.join(os.homedir(), '.local/node24/bin/node'),
+  path.join(os.homedir(), 'node24/bin/node'),
+];
+const NODE_24 = NODE_24_CANDIDATES.find((p) => fs.existsSync(p));
+
+if (!NODE_24) {
+  throw new Error(
+    `Node 24 not found. Looked in:\n  ${NODE_24_CANDIDATES.join('\n  ')}`
+  );
+}
+
 const app = (env, port) => ({
   name: `nexus-backend-${env}`,
   cwd: `${BASE}/nexus-backend-${env}`,
   script: 'dist/main.js',
+  interpreter: NODE_24,
   exec_mode: 'fork',
   instances: 1,
   env: {
