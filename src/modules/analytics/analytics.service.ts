@@ -60,6 +60,13 @@ export interface EnrichedEndUser {
     activeDays: number;
     /** Mean length of a completed session over the window; null when there were none. */
     avgSessionSec: number | null;
+    /**
+     * Coarse location from the app's own backend, which derives it from the
+     * IP at registration. Null for apps whose backend does not supply it.
+     */
+    city: string | null;
+    region: string | null;
+    country: string | null;
     /** Whether the app's backend actually returned a profile for this id. */
     resolved: boolean;
 }
@@ -397,6 +404,9 @@ export class AnalyticsService {
                 lastActiveAt: u.lastActiveAt,
                 phone: p?.phone ?? null,
                 name: p?.name ?? null,
+                city: p?.city ?? null,
+                region: p?.region ?? null,
+                country: p?.country ?? null,
                 appVersion: versionByUser.get(u.id) ?? null,
                 totalDurationSec: r?._sum.totalDurationSec ?? 0,
                 totalOpens: r?._sum.openCount ?? 0,
@@ -691,6 +701,9 @@ export class AnalyticsService {
                     lastActiveAt: u?.lastActiveAt,
                     phone: p?.phone ?? null,
                     name: p?.name ?? null,
+                    city: p?.city ?? null,
+                    region: p?.region ?? null,
+                    country: p?.country ?? null,
                     registrationDate: p?.registrationDate ?? u?.registeredAt ?? null,
                     totalDurationSec: r._sum.totalDurationSec ?? 0,
                     totalSessions: r._sum.sessionCount ?? 0,

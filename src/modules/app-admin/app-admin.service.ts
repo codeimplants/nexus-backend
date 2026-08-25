@@ -14,6 +14,22 @@ export interface FederatedProfile {
     phone: string | null;
     name: string | null;
     registrationDate: string | null;
+    /**
+     * Coarse location, when the app backend derives one.
+     *
+     * Nexus does not geolocate anything itself — it has no IP database and
+     * never sees a client IP, since the SDK talks to it directly but the
+     * lookup that matters happens where the app registers. goldrate-backend
+     * resolves city/region/country from the request IP against a local MMDB
+     * and stores it on the user; this carries that through rather than
+     * duplicating the database here.
+     *
+     * Null for any app whose backend does not send these, which is every
+     * app but goldrate today.
+     */
+    city: string | null;
+    region: string | null;
+    country: string | null;
 }
 
 /**
@@ -343,6 +359,9 @@ export class AppAdminService {
                 phone: this.firstText(row.phone, row.mobile, row.phoneNumber),
                 name: this.firstText(row.name, row.shopName, row.fullName),
                 registrationDate: this.firstText(row.registrationDate, row.createdAt),
+                city: this.firstText(row.city),
+                region: this.firstText(row.region, row.state),
+                country: this.firstText(row.country),
             });
         }
         return map;
