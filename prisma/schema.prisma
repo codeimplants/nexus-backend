@@ -157,6 +157,14 @@ model VersionRule {
   isActive        Boolean  @default(true)
   priority        Int      @default(0) // Higher priority rules are evaluated first
 
+  /// Apply this rule to installs that report NO version at all.
+  ///
+  /// Off by default and only meaningful with updateType "force". Turning it on
+  /// asserts that every build capable of reporting a version is at or above
+  /// latestVersion — otherwise the clients it catches can never satisfy it. See
+  /// VersionEngine.evaluate() for the full argument.
+  forceUnversionedClients Boolean @default(false)
+
   // Message Configuration
   messageConfig Json // { title, message, buttonText, etc. }
 

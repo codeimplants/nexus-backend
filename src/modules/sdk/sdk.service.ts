@@ -156,6 +156,7 @@ export class SdkService {
             // Map Prisma rules to VersionRule interface, transforming null dates to undefined
             const mappedRules: VersionRule[] = rules.map(rule => ({
                 killSwitch: rule.killSwitch,
+                forceUnversionedClients: rule.forceUnversionedClients,
                 blockedVersions: rule.blockedVersions,
                 latestVersion: rule.latestVersion,
                 updateType: rule.updateType,

@@ -1,5 +1,6 @@
 export interface VersionRule {
     killSwitch: boolean;
+    forceUnversionedClients: boolean;
     blockedVersions: string[];
     latestVersion: string;
     updateType: string;
@@ -17,6 +18,16 @@ export interface MaintenanceMode {
     message: string;
     estimatedEnd?: Date;
 }
+
+/**
+ * Why a reported version was not believed.
+ *
+ * Separate from the human-readable `reason` because behaviour keys off it —
+ * `forceUnversionedClients` applies to 'no-version' and to nothing else — and a
+ * decision that hinges on matching a sentence is one reworded log line away from
+ * silently changing what ships to every install.
+ */
+export type UntrustedVersionCode = 'no-version' | 'unparseable' | 'scaffold-placeholder';
 
 interface EvaluationContext {
     currentVersion?: string;
@@ -125,6 +136,32 @@ export class VersionEngine {
         // must never depend on the client getting version detection right.
         const trust = this.trustReportedVersion(context.currentVersion);
         if (!trust.trusted) {
+            // The one deliberate exception, off unless a rule opts in.
+            //
+            // Scoped to 'no-version' and never to a wrong version, because the two
+            // fail differently. A client reporting 0.0.1 reports 0.0.1 again after
+            // updating — the loop above. A client reporting *nothing* is a build
+            // whose SDK could not read its version at all, and the build that
+            // replaces it reports properly, so forcing it terminates: it updates
+            // once and the rule stops matching.
+            //
+            // That reasoning holds only while every build that CAN report a version
+            // is at or above latestVersion, which the operator asserts by ticking
+            // the box — Nexus cannot verify it. Get it wrong and the stranded
+            // installs are locked out with no way to comply, so it stays off by
+            // default and lives per rule, never per app.
+            //
+            // Sonebhav iOS is the case this exists for: 1.0.5 shipped with no
+            // version-detection path on iOS at all, so it has never been reachable
+            // by any rule, while 1.19 reports correctly and cannot be caught here.
+            if (
+                trust.code === 'no-version' &&
+                rule.forceUnversionedClients &&
+                rule.updateType === 'force'
+            ) {
+                return this.forceUpdateResponse(rule, storeUrl);
+            }
+
             return {
                 status: 'NONE',
                 latestVersion: rule.latestVersion,
@@ -153,19 +190,7 @@ export class VersionEngine {
             }
 
             if (rule.updateType === 'force') {
-                return {
-                    status: 'FORCE_UPDATE',
-                    title: rule.messageConfig?.forceTitle || rule.messageConfig?.title || 'Update Required',
-                    message:
-                        rule.messageConfig?.forceMessage ||
-                        rule.messageConfig?.message ||
-                        'Please update to the latest version to continue.',
-                    buttonText: rule.messageConfig?.forceButtonText || rule.messageConfig?.buttonText || 'Update Now',
-                    customMessage: rule.messageConfig,
-                    latestVersion: rule.latestVersion,
-                    blockVersion: true,
-                    storeUrl,
-                };
+                return this.forceUpdateResponse(rule, storeUrl);
             }
         }
 
@@ -173,6 +198,29 @@ export class VersionEngine {
         return {
             status: 'NONE',
             latestVersion: rule.latestVersion
+        };
+    }
+
+    /**
+     * The FORCE_UPDATE payload, built in one place.
+     *
+     * Two paths reach it — a trusted version below latestVersion, and an
+     * unversioned client on an opted-in rule — and they must be indistinguishable
+     * on the wire. A shipped binary cannot be taught a second shape.
+     */
+    private static forceUpdateResponse(rule: VersionRule, storeUrl?: string) {
+        return {
+            status: 'FORCE_UPDATE',
+            title: rule.messageConfig?.forceTitle || rule.messageConfig?.title || 'Update Required',
+            message:
+                rule.messageConfig?.forceMessage ||
+                rule.messageConfig?.message ||
+                'Please update to the latest version to continue.',
+            buttonText: rule.messageConfig?.forceButtonText || rule.messageConfig?.buttonText || 'Update Now',
+            customMessage: rule.messageConfig,
+            latestVersion: rule.latestVersion,
+            blockVersion: true,
+            storeUrl,
         };
     }
 
@@ -223,9 +271,9 @@ export class VersionEngine {
      */
     static trustReportedVersion(
         currentVersion?: string,
-    ): { trusted: true } | { trusted: false; reason: string } {
+    ): { trusted: true } | { trusted: false; code: UntrustedVersionCode; reason: string } {
         if (!currentVersion || !currentVersion.trim()) {
-            return { trusted: false, reason: 'client sent no version' };
+            return { trusted: false, code: 'no-version', reason: 'client sent no version' };
         }
 
         const parts = currentVersion
@@ -236,6 +284,7 @@ export class VersionEngine {
         if (parts.length === 0) {
             return {
                 trusted: false,
+                code: 'unparseable',
                 reason: `client sent an unparseable version "${currentVersion}"`,
             };
         }
@@ -246,6 +295,7 @@ export class VersionEngine {
         if (major === 0 && minor === 0) {
             return {
                 trusted: false,
+                code: 'scaffold-placeholder',
                 reason:
                     `client reported the scaffold placeholder version "${currentVersion}" — it is ` +
                     `reading its version from project metadata, not from the installed binary`,
