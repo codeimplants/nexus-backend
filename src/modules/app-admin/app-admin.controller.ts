@@ -1,4 +1,14 @@
-import { All, Body, Controller, HttpCode, Param, Post, Req, UseGuards } from '@nestjs/common';
+import {
+    All,
+    Body,
+    Controller,
+    ForbiddenException,
+    HttpCode,
+    Param,
+    Post,
+    Req,
+    UseGuards,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import { AppAdminService } from './app-admin.service';
 import { JwtGuard } from '../../common/guards/jwt.guard';
@@ -51,16 +61,52 @@ export class AppAdminController {
         return this.appAdmin.purgeDeletedUsers(id, body ?? {});
     }
 
+    /**
+     * `X-Impersonate-User-Id` on an inbound request is forwarded to the app's
+     * backend, which is how the console's read-only "view as" renders one
+     * user's own records. Deliberately taken from a header rather than the path
+     * or query: every existing caller keeps working untouched, and a request
+     * that omits it cannot accidentally become an impersonated one.
+     *
+     * Nothing is trusted from the browser beyond the id itself — the acting
+     * admin comes from the JWT, and the service rejects any impersonated
+     * method other than GET.
+     */
     @All('backend/*')
-    proxy(@Param('id') id: string, @Req() req: Request, @Body() body: unknown) {
+    proxy(
+        @Param('id') id: string,
+        @Req() req: Request,
+        @Body() body: unknown,
+        @User() user: { id: string; email?: string; role?: string },
+    ) {
         // Express 4 exposes the wildcard segment as params[0].
         const subPath = (req.params as Record<string, string>)['0'] ?? '';
+        const impersonateUserId = req.headers['x-impersonate-user-id'];
+
+        // Reads stay open to COLLABORATOR; writes do not. Every deliberate
+        // destructive route on this controller is already @Roles('ADMIN'), and
+        // this wildcard reaches the same app backends by another path — a
+        // COLLABORATOR could POST the app's own bulk-delete through here and
+        // get exactly what purgeUsers refuses them. The class-level allow-list
+        // cannot express this, because it cannot see the HTTP method.
+        if (req.method.toUpperCase() !== 'GET' && user?.role !== 'ADMIN') {
+            throw new ForbiddenException(
+                'Only an ADMIN may send write requests to an app backend',
+            );
+        }
         return this.appAdmin.proxy(
             id,
             req.method,
             subPath,
             req.query as Record<string, any>,
             body,
+            {
+                impersonateUserId:
+                    typeof impersonateUserId === 'string' && impersonateUserId.trim()
+                        ? impersonateUserId.trim()
+                        : undefined,
+                admin: user,
+            },
         );
     }
 }

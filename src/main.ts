@@ -76,7 +76,15 @@ async function bootstrap() {
     // x-api-key: how /sdk/* endpoints authenticate web/RN-web clients
     // (platformAnalytics.ts) — missing here silently CORS-blocks every such
     // call from a browser (native apps are unaffected; CORS is browser-only).
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+    // x-impersonate-user-id: the console's read-only "view as" (AppAdminController
+    // .proxy). Same trap — omitting it fails the preflight, not the request, so
+    // the console would report an unreachable backend rather than a blocked header.
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'x-api-key',
+      'x-impersonate-user-id',
+    ],
     credentials: true,
   });
 
