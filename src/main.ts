@@ -35,10 +35,15 @@ const ALLOWED_ORIGINS = [
   'https://version-control-vc.firebaseapp.com',
   'https://version-control-vc.web.app',
 
-  // SoneBill's react-native-web build (project sonebill-534ab), the "real"
-  // SoneBill web surface — sonebill.codeimplants.com above is the separate
-  // (unused) admin-dashboard SPA, not this. Calls /sdk/* directly from the
-  // browser via platformAnalytics.ts.
+  // SoneBill's react-native-web build (project sonebill-534ab). Calls /sdk/*
+  // directly from the browser via platformAnalytics.ts.
+  //
+  // sonebill.codeimplants.com, listed above under the suffix allow-list, is a
+  // custom domain on THIS SAME project and serves this same build — verified
+  // byte-identical on 31 Aug 2026. An earlier note here called it a separate,
+  // unused admin-dashboard SPA; that is wrong, and it matters because it is the
+  // canonical URL to hand people (it survives a Firebase project change), which
+  // is what Nexus opens for impersonation.
   'https://sonebill-534ab.firebaseapp.com',
   'https://sonebill-534ab.web.app',
 ];
