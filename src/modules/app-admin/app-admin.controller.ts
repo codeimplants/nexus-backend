@@ -62,15 +62,14 @@ export class AppAdminController {
     }
 
     /**
-     * `X-Impersonate-User-Id` on an inbound request is forwarded to the app's
-     * backend, which is how the console's read-only "view as" renders one
-     * user's own records. Deliberately taken from a header rather than the path
-     * or query: every existing caller keeps working untouched, and a request
-     * that omits it cannot accidentally become an impersonated one.
+     * Impersonation is deliberately NOT forwarded here.
      *
-     * Nothing is trusted from the browser beyond the id itself — the acting
-     * admin comes from the JWT, and the service rejects any impersonated
-     * method other than GET.
+     * This route briefly relayed `X-Impersonate-User-Id` so the console could
+     * render a read-only summary of one shop's records. That summary is gone:
+     * the point of impersonating is to see what the user sees, and a summary is
+     * not that. Nexus now hands off to the app's own web build, which has the
+     * real screens and its own admin session — so the console needs no way to
+     * act as an end user, and the narrowest version of that is having none.
      */
     @All('backend/*')
     proxy(
@@ -81,7 +80,6 @@ export class AppAdminController {
     ) {
         // Express 4 exposes the wildcard segment as params[0].
         const subPath = (req.params as Record<string, string>)['0'] ?? '';
-        const impersonateUserId = req.headers['x-impersonate-user-id'];
 
         // Reads stay open to COLLABORATOR; writes do not. Every deliberate
         // destructive route on this controller is already @Roles('ADMIN'), and
@@ -100,13 +98,6 @@ export class AppAdminController {
             subPath,
             req.query as Record<string, any>,
             body,
-            {
-                impersonateUserId:
-                    typeof impersonateUserId === 'string' && impersonateUserId.trim()
-                        ? impersonateUserId.trim()
-                        : undefined,
-                admin: user,
-            },
         );
     }
 }

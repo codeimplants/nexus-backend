@@ -58,7 +58,6 @@ export class AppAdminService {
         subPath: string,
         query: Record<string, any>,
         body: unknown,
-        opts: { impersonateUserId?: string; admin?: { id: string; email?: string } } = {},
     ): Promise<unknown> {
         const app = await this.prisma.app.findUnique({
             where: { id: appId },
@@ -69,33 +68,12 @@ export class AppAdminService {
             throw new BadRequestException('No backend is configured for this app');
         }
 
-        // View-as is a read, and only a read. Sonebill's own backend already
-        // refuses impersonated writes, but Nexus must not depend on every app
-        // having remembered to: a write carrying someone else's id is an action
-        // attributed to a person who did not take it, and here is the one place
-        // that can be ruled out for all apps at once.
-        if (opts.impersonateUserId && method.toUpperCase() !== 'GET') {
-            throw new BadRequestException('Only GET requests may be impersonated');
-        }
-
-        if (opts.impersonateUserId && opts.admin) {
-            // Reading one user's own records is a different act from reading
-            // aggregates about them, so it leaves a trail. Per request rather
-            // than per session because there is no session here — the view-as
-            // page simply issues a handful of proxied GETs.
-            this.logger.log(
-                `View-as: admin ${opts.admin.email ?? opts.admin.id} read ${subPath} ` +
-                `as user ${opts.impersonateUserId} on app ${appId}`,
-            );
-        }
-
         return this.call(
             { baseUrl: app.backendBaseUrl, token: this.decryptToken(app.backendServiceToken) },
             method,
             subPath,
             query,
             body,
-            opts.impersonateUserId,
         );
     }
 
@@ -416,7 +394,6 @@ export class AppAdminService {
         subPath: string,
         query: Record<string, any>,
         body: unknown,
-        impersonateUserId?: string,
     ): Promise<unknown> {
         const url = this.buildUrl(config.baseUrl, subPath, query);
         const app = { backendServiceToken: config.token };
@@ -424,13 +401,6 @@ export class AppAdminService {
         const headers: Record<string, string> = { Accept: 'application/json' };
         if (app.backendServiceToken) {
             headers.Authorization = `Bearer ${app.backendServiceToken}`;
-        }
-        // The stored service token is an admin credential on the app's own
-        // backend, which is precisely what its impersonation guard demands:
-        // Sonebill honours this header only when the caller's own role is
-        // admin, and then swaps the request's subject for the named user.
-        if (impersonateUserId) {
-            headers['X-Impersonate-User-Id'] = impersonateUserId;
         }
 
         const hasBody = !['GET', 'HEAD'].includes(method.toUpperCase());
