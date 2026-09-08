@@ -49,7 +49,19 @@ const ALLOWED_ORIGINS = [
 ];
 
 // Any subdomain (and the apex) of these domains is allowed.
-const ALLOWED_ORIGIN_SUFFIXES = ['codeimplants.com', 'lovable.app'];
+//
+// barnefarms.com is the first app that lives on its own domain rather than a
+// codeimplants.com subdomain, and its web build calls /sdk/* straight from the
+// browser. Without it here the preflight is rejected and every telemetry call
+// from barnefarms.com, dev.barnefarms.com and preprod.barnefarms.com is
+// CORS-blocked — silently, because the client swallows failures by design and
+// the native apps are unaffected (CORS is browser-only). The symptom is simply
+// no Device rows ever appearing for that app.
+const ALLOWED_ORIGIN_SUFFIXES = [
+  'codeimplants.com',
+  'lovable.app',
+  'barnefarms.com',
+];
 
 function isAllowedOrigin(origin: string): boolean {
   if (ALLOWED_ORIGINS.includes(origin)) return true;
