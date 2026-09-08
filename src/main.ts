@@ -50,24 +50,76 @@ const ALLOWED_ORIGINS = [
 
 // Any subdomain (and the apex) of these domains is allowed.
 //
-// barnefarms.com is the first app that lives on its own domain rather than a
-// codeimplants.com subdomain, and its web build calls /sdk/* straight from the
-// browser. Without it here the preflight is rejected and every telemetry call
-// from barnefarms.com, dev.barnefarms.com and preprod.barnefarms.com is
-// CORS-blocked — silently, because the client swallows failures by design and
-// the native apps are unaffected (CORS is browser-only). The symptom is simply
-// no Device rows ever appearing for that app.
-const ALLOWED_ORIGIN_SUFFIXES = [
-  'codeimplants.com',
-  'lovable.app',
-  'barnefarms.com',
+// This is the built-in floor, not the whole list: per-deployment domains are
+// added through CORS_EXTRA_ORIGIN_SUFFIXES (see below), which is how
+// barnefarms.com is allowed. Add here only what should be true for every
+// deployment of Nexus.
+const ALLOWED_ORIGIN_SUFFIXES = ['codeimplants.com', 'lovable.app'];
+
+/**
+ * Extra origins from the environment, so onboarding an app on a new domain is
+ * an .env edit and a restart rather than a code change and three deploys of
+ * the shared platform.
+ *
+ *   CORS_EXTRA_ORIGINS=https://foo.example,https://bar.example
+ *   CORS_EXTRA_ORIGIN_SUFFIXES=barnefarms.com,newapp.in
+ *
+ * The hardcoded lists above stay as the floor and are never replaced. A
+ * mistyped or empty variable can therefore only fail to ADD a domain; it can
+ * never lock out an app that already works, which is the failure mode that
+ * would matter at 2am.
+ *
+ * Exact origins and suffixes are kept as separate variables on purpose. A
+ * suffix is far more powerful than it looks -- 'firebaseapp.com' as a suffix
+ * would admit every Firebase-hosted site on the internet -- and merging them
+ * into one variable makes it easy to paste a host into the wrong one.
+ */
+function parseListEnv(name: string): string[] {
+  return (process.env[name] ?? '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+/** Suffixes that would hand access to every tenant of a shared host. */
+const MULTI_TENANT_SUFFIXES = [
+  'firebaseapp.com',
+  'web.app',
+  'vercel.app',
+  'netlify.app',
+  'pages.dev',
+  'github.io',
 ];
 
+function loadExtraSuffixes(): string[] {
+  return parseListEnv('CORS_EXTRA_ORIGIN_SUFFIXES').filter((suffix) => {
+    // A single-label suffix ('com') would match every hostname ending in it.
+    if (!suffix.includes('.')) {
+      console.error(
+        `CORS_EXTRA_ORIGIN_SUFFIXES: ignoring '${suffix}' — a suffix with no dot matches far too much.`,
+      );
+      return false;
+    }
+    if (MULTI_TENANT_SUFFIXES.includes(suffix)) {
+      console.warn(
+        `CORS_EXTRA_ORIGIN_SUFFIXES: '${suffix}' is a shared hosting domain — this allows EVERY site hosted there. Use CORS_EXTRA_ORIGINS with the exact origin instead.`,
+      );
+    }
+    return true;
+  });
+}
+
+const EXTRA_ORIGINS = parseListEnv('CORS_EXTRA_ORIGINS');
+const EXTRA_ORIGIN_SUFFIXES = loadExtraSuffixes();
+
+const effectiveOrigins = [...ALLOWED_ORIGINS, ...EXTRA_ORIGINS];
+const effectiveSuffixes = [...ALLOWED_ORIGIN_SUFFIXES, ...EXTRA_ORIGIN_SUFFIXES];
+
 function isAllowedOrigin(origin: string): boolean {
-  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  if (effectiveOrigins.includes(origin)) return true;
   try {
     const { hostname } = new URL(origin);
-    return ALLOWED_ORIGIN_SUFFIXES.some(
+    return effectiveSuffixes.some(
       (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
     );
   } catch {
@@ -77,6 +129,16 @@ function isAllowedOrigin(origin: string): boolean {
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Logged at boot because the alternative way to discover a missing entry is
+  // a silently dropped telemetry call from a browser somewhere.
+  console.log(
+    `CORS: ${effectiveOrigins.length} exact origins, ${effectiveSuffixes.length} suffixes ` +
+      `(${EXTRA_ORIGINS.length} + ${EXTRA_ORIGIN_SUFFIXES.length} from env)` +
+      (EXTRA_ORIGIN_SUFFIXES.length
+        ? ` — env suffixes: ${EXTRA_ORIGIN_SUFFIXES.join(', ')}`
+        : ''),
+  );
 
   app.enableCors({
     origin: (origin, callback) => {
