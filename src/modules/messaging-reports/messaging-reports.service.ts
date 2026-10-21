@@ -184,7 +184,7 @@ export class MessagingReportsService {
         const range = this.range(input);
         const limit = Math.min(Math.max(Number(input.limit) || 50, 1), 200);
         const res = await this.get<MessagingAppUsers>(
-            `/apps/${slug}/users?from=${range.from}&to=${range.to}&limit=${limit}`,
+            `/apps/${slug}/users?from=${range.from}&to=${range.to}&limit=${limit}&kind=otp`,
             actorId,
         );
         return {
