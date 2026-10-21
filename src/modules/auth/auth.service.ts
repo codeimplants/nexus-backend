@@ -4,18 +4,22 @@ import {
     ForbiddenException,
     BadRequestException,
     ServiceUnavailableException,
+    HttpException,
+    HttpStatus,
     Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { JwtService } from '@nestjs/jwt';
+import { MessagingApiError } from '@codeimplants/messaging-node';
+import { messagingClient } from '../../common/messaging';
 
 const SALT_ROUNDS = 12;
 const OTP_TTL_MS = 5 * 60 * 1000;
-const TWOFACTOR_TEMPLATE = 'OTP1';
-/** Fixed code accepted on dev/preprod so lower envs need no real SMS. */
-const STATIC_OTP = '123456';
+
+/** `******3210`: enough to tell two admins apart in a log, not enough to text one. */
+const maskPhone = (phone: string) => `******${String(phone).slice(-4)}`;
 
 @Injectable()
 export class AuthService {
@@ -58,25 +62,29 @@ export class AuthService {
     // ---------------------------------------------------------------------
     // Phone + OTP (primary console login)
     //
-    // Mirrors the app backends' 2Factor flow: AUTOGEN returns a sessionId, and a
-    // stateless HMAC (`fullhash`) binds phone+sessionId+expiry so no OTP is ever
-    // stored. Only phones belonging to an active admin are ever texted.
+    // Code Implants Messaging (src/common/messaging.ts) sends and checks every
+    // code, as it does for the apps. Its otpId is the sessionId, and a stateless
+    // HMAC (`fullhash`) still binds phone+sessionId+expiry, so the login screen
+    // did not change and no code is stored here. Only phones belonging to an
+    // active admin are ever texted.
+    //
+    // dev and preprod use messaging dev, which sends nothing and makes every
+    // code 123456; prod uses messaging prod and real SMS.
+    //
+    // Without MESSAGING_API_KEY, OTP login is refused. The 2Factor code this
+    // replaced fell back to a fixed 123456 whenever its key was missing, prod
+    // included, so one missing line in .env let anyone who knew an admin's
+    // number into the console. When messaging is unreachable, the way in is
+    // password login (ALLOW_PASSWORD_LOGIN), not a weaker code.
     // ---------------------------------------------------------------------
 
-    /**
-     * Lower environments accept a fixed OTP instead of sending a real SMS, so
-     * dev/preprod sign-in costs nothing and works without a phone in hand.
-     * Mirrors the sonebill backend, except sonebill treats only `dev` this way
-     * while nexus also includes `preprod` (deliberate — preprod here is an
-     * internal rehearsal environment, not a customer-facing one).
-     *
-     * Prod always goes through 2Factor. If the key is missing anywhere we fall
-     * back to the static OTP rather than failing closed, because an admin locked
-     * out of the console cannot fix the console.
-     */
-    private get usesStaticOtp(): boolean {
-        const env = process.env.NODE_ENV ?? '';
-        return env === 'dev' || env === 'preprod' || !process.env.TWOFACTOR_API_KEY;
+    private requireMessaging() {
+        const client = messagingClient();
+        if (!client) {
+            this.logger.error('MESSAGING_API_KEY is not set, so OTP login is unavailable');
+            throw new ServiceUnavailableException('OTP service unavailable');
+        }
+        return client;
     }
 
     private signOtpHash(phone: string, sessionId: string, expires: number): string {
@@ -124,44 +132,45 @@ export class AuthService {
     async requestOtp(phone: string) {
         if (!phone) throw new BadRequestException('Phone is required');
         await this.requireAdminByPhone(phone);
+        const messaging = this.requireMessaging();
 
         const expires = Date.now() + OTP_TTL_MS;
-
-        if (this.usesStaticOtp) {
-            // No SMS is sent. The code is always STATIC_OTP, so echoing it back
-            // leaks nothing that is not already fixed and known.
-            const sessionId = `DEV_SESSION_${Date.now()}`;
-            return {
-                phone,
-                sessionId,
-                fullhash: this.signOtpHash(phone, sessionId, expires),
-                otp: STATIC_OTP,
-                success: true,
-                note: `Lower environment - use OTP ${STATIC_OTP}`,
-            };
-        }
-
-        const url = `https://2factor.in/API/V1/${process.env.TWOFACTOR_API_KEY}/SMS/${phone}/AUTOGEN/${TWOFACTOR_TEMPLATE}`;
-        let data: any;
+        let sent: Awaited<ReturnType<typeof messaging.otp.send>>;
         try {
-            const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-            data = await res.json();
+            sent = await messaging.otp.send({ phone, purpose: 'login' });
         } catch (error) {
-            this.logger.error(`2Factor request failed: ${String(error)}`);
-            throw new ServiceUnavailableException('OTP service unavailable');
-        }
-
-        if (data?.Status !== 'Success') {
-            this.logger.error(`2Factor error: ${JSON.stringify(data)}`);
+            if (error instanceof MessagingApiError && error.isQuotaRefusal) {
+                const wait = error.retryAfterSeconds ?? 60;
+                throw new HttpException(
+                    {
+                        statusCode: HttpStatus.TOO_MANY_REQUESTS,
+                        error: 'Too Many Requests',
+                        message:
+                            error.code === 'cooldown_active'
+                                ? `Please wait ${wait} seconds before requesting another code.`
+                                : 'Too many codes requested for this number. Please try again later.',
+                        retryAfterSeconds: wait,
+                    },
+                    HttpStatus.TOO_MANY_REQUESTS,
+                );
+            }
+            this.logger.error(
+                `OTP send failed for ${maskPhone(phone)}: ` +
+                    (error instanceof MessagingApiError ? `${error.status} ${error.code} ${error.message}` : String(error)),
+            );
             throw new ServiceUnavailableException('Failed to send OTP, please try again');
         }
+        this.logger.log(`OTP session ${sent.otpId} created for ${maskPhone(phone)}`);
 
-        const sessionId = data.Details as string;
         return {
             phone,
-            sessionId,
-            fullhash: this.signOtpHash(phone, sessionId, expires),
+            sessionId: sent.otpId,
+            fullhash: this.signOtpHash(phone, sent.otpId, expires),
             success: true,
+            // Messaging returns the code only where it sends nothing (dev and
+            // preprod), never in prod, so showing it on the login screen leaks
+            // nothing that is not already fixed and known.
+            ...(sent.devCode ? { otp: sent.devCode, note: `Lower environment - use OTP ${sent.devCode}` } : {}),
         };
     }
 
@@ -172,26 +181,31 @@ export class AuthService {
         }
 
         this.verifyOtpHash(phone, sessionId, fullhash);
+        const messaging = this.requireMessaging();
 
-        if (this.usesStaticOtp) {
-            // The HMAC above already proved this session came from us and has not
-            // expired, so the only remaining check is the fixed code.
-            if (String(otp) !== STATIC_OTP) {
-                throw new UnauthorizedException('Invalid OTP');
+        // Every way a code can fail comes back as a result; only a transport
+        // failure (messaging unreachable, a bad key) throws.
+        let result: Awaited<ReturnType<typeof messaging.otp.verify>>;
+        try {
+            result = await messaging.otp.verify({ otpId: sessionId, code: String(otp) });
+        } catch (error) {
+            this.logger.error(
+                `OTP verify failed for ${maskPhone(phone)}: ` +
+                    (error instanceof MessagingApiError ? `${error.status} ${error.code} ${error.message}` : String(error)),
+            );
+            throw new ServiceUnavailableException('OTP service unavailable');
+        }
+        if (!result.verified) {
+            // A session from before the move (a 2Factor id or DEV_SESSION_) is
+            // `not_found` here, so it fails as an invalid code.
+            this.logger.warn(`OTP rejected for ${maskPhone(phone)} session ${sessionId}: ${result.reason}`);
+            if (result.reason === 'expired') {
+                throw new UnauthorizedException('OTP has expired, please request a new one');
             }
-        } else {
-            const url = `https://2factor.in/API/V1/${process.env.TWOFACTOR_API_KEY}/SMS/VERIFY/${sessionId}/${otp}`;
-            let data: any;
-            try {
-                const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-                data = await res.json();
-            } catch (error) {
-                this.logger.error(`2Factor verify failed: ${String(error)}`);
-                throw new ServiceUnavailableException('OTP service unavailable');
+            if (result.reason === 'attempts_exhausted' || result.reason === 'no_longer_valid') {
+                throw new UnauthorizedException('This code can no longer be used, please request a new one');
             }
-            if (data?.Status !== 'Success') {
-                throw new UnauthorizedException('Invalid OTP');
-            }
+            throw new UnauthorizedException('Invalid OTP');
         }
 
         const admin = await this.requireAdminByPhone(phone);
