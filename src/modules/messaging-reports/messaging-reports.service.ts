@@ -168,6 +168,9 @@ export class MessagingReportsService {
 
         return {
             range: { from: range.from, to: range.to, days: range.days, timezone: 'Asia/Kolkata', granularity },
+            // dev and preprod read messaging dev, where nothing is really sent;
+            // the dashboard says so rather than passing test traffic off as real.
+            environment: process.env.NODE_ENV ?? 'unknown',
             totals: {
                 ...appRows.reduce<OtpCounts>((acc, a) => addCounts(acc, a), { ...ZERO }),
                 users: byUser.rows.length,
@@ -191,6 +194,8 @@ export class MessagingReportsService {
             app: slug,
             range: { from: range.from, to: range.to, timezone: 'Asia/Kolkata' },
             users: res.users.map((u) => ({
+                // Messaging's opaque id for the person, stable across ranges.
+                id: u.endUserId,
                 phoneLast4: u.phoneLast4,
                 appUserId: u.appUserId,
                 codes: u.messages,
