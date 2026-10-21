@@ -100,6 +100,25 @@ because it does, deliberately, so a dead backend cannot crash an app.
 
 ---
 
+## OTP login and the Messages tab go through Code Implants Messaging
+
+Since 2026-10-21 the console's phone login never calls 2Factor. `AuthService` sends and checks codes
+through messaging (`src/common/messaging.ts`, `MESSAGING_BASE_URL` / `MESSAGING_API_KEY`); its `otpId`
+is the `sessionId`, and the `fullhash` HMAC is unchanged. dev and preprod use messaging dev, which sends
+nothing and makes every code 123456 (shown on the login screen from `devCode`); prod sends real SMS.
+
+- **Without `MESSAGING_API_KEY`, OTP login is refused.** Do not bring back a fixed-code fallback: the
+  2Factor version accepted 123456 in prod whenever its key was missing. Password login
+  (`ALLOW_PASSWORD_LOGIN`) is the way in when messaging is down.
+- **Dashboard → All apps → Messages → OTP Usage Summary** comes from `src/modules/messaging-reports`
+  (ADMIN only), which reads messaging's admin API over loopback with a read-only ops key
+  (`MESSAGING_ADMIN_URL` / `MESSAGING_OPS_KEY`). The key never reaches the browser.
+- Both keys are written on the server by `messaging-backend/scripts/connect-app.sh` and
+  `connect-ops.sh`, which never print them. See messaging-backend `docs/MIGRATION.md` (section 6) and
+  `docs/API.md` (*Nexus integration*).
+
+---
+
 ## Deploying
 
 `./scripts/deploy.sh --env <dev|preprod|prod>`; always pass `--yes` for non-interactive runs or prod
