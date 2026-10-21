@@ -8,6 +8,7 @@ import { UsersModule } from './modules/users/users.module';
 import { AppAdminModule } from './modules/app-admin/app-admin.module';
 import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module';
 import { HealthModule } from './health/health.module';
+import { MessagingReportsModule } from './modules/messaging-reports/messaging-reports.module';
 import { PrismaService } from './database/prisma.service';
 
 @Module({
@@ -26,6 +27,8 @@ import { PrismaService } from './database/prisma.service';
         // /health returned 404. The deploy script's post-restart health check
         // depends on it.
         HealthModule,
+        // The dashboard's Messages tab, read from Code Implants Messaging.
+        MessagingReportsModule,
     ],
     providers: [PrismaService],
 })
