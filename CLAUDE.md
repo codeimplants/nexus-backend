@@ -119,6 +119,21 @@ nothing and makes every code 123456 (shown on the login screen from `devCode`); 
 
 ---
 
+## The Payments tab reads Code Implants Pay
+
+**Dashboard → All apps → Payments → Payments Summary** comes from `src/modules/payments-reports` (ADMIN
+only). It reads payments-backend's `/admin/v1/summary` and `/admin/v1/customers` over loopback with a
+read-only ops key (`PAYMENTS_ADMIN_URL` / `PAYMENTS_OPS_KEY`). The key never reaches the browser.
+
+- dev and preprod read payments dev (the PhonePe sandbox, port 7121); prod reads payments prod (7120).
+- On the server, `bash ~/payments/<prod|dev>/scripts/connect-nexus.sh` writes both settings into the
+  matching Nexus checkouts and restarts them. It never prints the key, and re-running it rotates the key.
+- A "user" is the app's own `customerRef`. Payments never stores names, phones or emails, so the tab shows
+  those ids. Showing names would mean looking them up in each app's own backend.
+- The IST date range and chart buckets come from `src/common/ist-days.ts`, which Messages uses too.
+
+---
+
 ## Deploying
 
 `./scripts/deploy.sh --env <dev|preprod|prod>`; always pass `--yes` for non-interactive runs or prod

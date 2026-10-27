@@ -9,6 +9,7 @@ import { AppAdminModule } from './modules/app-admin/app-admin.module';
 import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module';
 import { HealthModule } from './health/health.module';
 import { MessagingReportsModule } from './modules/messaging-reports/messaging-reports.module';
+import { PaymentsReportsModule } from './modules/payments-reports/payments-reports.module';
 import { PrismaService } from './database/prisma.service';
 
 @Module({
@@ -29,6 +30,8 @@ import { PrismaService } from './database/prisma.service';
         HealthModule,
         // The dashboard's Messages tab, read from Code Implants Messaging.
         MessagingReportsModule,
+        // The dashboard's Payments tab, read from Code Implants Pay.
+        PaymentsReportsModule,
     ],
     providers: [PrismaService],
 })
