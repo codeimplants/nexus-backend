@@ -5,6 +5,7 @@ import {
     Logger,
     ServiceUnavailableException,
 } from '@nestjs/common';
+import { istBuckets, istRange } from '../../common/ist-days';
 
 /**
  * Reads Code Implants Messaging's admin API for the dashboard's Messages tab.
@@ -87,13 +88,10 @@ export interface OtpCounts {
     smsSegments: number;
 }
 
-const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const DAY_MS = 24 * 60 * 60 * 1000;
-const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 /** Up to this many days the chart has a bar per day; beyond it, a bar per month. */
 const MAX_DAILY_BARS = 120;
-const MAX_RANGE_DAYS = 3 * 366;
+const RANGE_LIMIT = { days: 3 * 366, message: 'Pick a range of at most three years' };
 
 const toCounts = (r?: UsageCounts): OtpCounts => ({
     requested: (r?.messages ?? 0) + (r?.suppressed ?? 0),
@@ -122,7 +120,7 @@ export class MessagingReportsService {
      * per app (including apps that sent nothing), and a time series per app.
      */
     async otpSummary(input: { from?: string; to?: string }, actorId: string) {
-        const range = this.range(input);
+        const range = istRange(input, RANGE_LIMIT);
         const granularity = range.days <= MAX_DAILY_BARS ? 'day' : 'month';
         const qs = `from=${range.from}&to=${range.to}&kind=otp`;
 
@@ -156,7 +154,7 @@ export class MessagingReportsService {
             })
             .sort((x, y) => y.smsSegments - x.smsSegments || y.requested - x.requested || x.name.localeCompare(y.name));
 
-        const buckets = this.buckets(range, granularity);
+        const buckets = istBuckets(range, granularity);
         const series = new Map(buckets.map((b) => [b, { bucket: b, total: { ...ZERO }, bySlug: {} as Record<string, OtpCounts> }]));
         for (const r of byBucket.rows) {
             const point = r.bucket ? series.get(r.bucket) : undefined;
@@ -184,7 +182,7 @@ export class MessagingReportsService {
     /** One app's people, most codes first. Phones are only ever the last four digits. */
     async appUsers(slug: string, input: { from?: string; to?: string; limit?: string }, actorId: string) {
         if (!SLUG.test(slug)) throw new BadRequestException('Unknown app');
-        const range = this.range(input);
+        const range = istRange(input, RANGE_LIMIT);
         const limit = Math.min(Math.max(Number(input.limit) || 50, 1), 200);
         const res = await this.get<MessagingAppUsers>(
             `/apps/${slug}/users?from=${range.from}&to=${range.to}&limit=${limit}&kind=otp`,
@@ -207,40 +205,6 @@ export class MessagingReportsService {
     }
 
     // ---------------------------------------------------------------------
-
-    /** Validated IST days, inclusive; the last 30 days when none are given. */
-    private range(input: { from?: string; to?: string }) {
-        const today = new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
-        const to = input.to?.trim() || today;
-        const from = input.from?.trim() || new Date(Date.parse(`${to}T00:00:00Z`) - 29 * DAY_MS).toISOString().slice(0, 10);
-        for (const [name, value] of [['from', from], ['to', to]] as const) {
-            const parsed = Date.parse(`${value}T00:00:00Z`);
-            if (!DAY.test(value) || Number.isNaN(parsed) || new Date(parsed).toISOString().slice(0, 10) !== value) {
-                throw new BadRequestException(`${name} must be a date as YYYY-MM-DD`);
-            }
-        }
-        const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY_MS) + 1;
-        if (days < 1) throw new BadRequestException('from must not be after to');
-        if (days > MAX_RANGE_DAYS) throw new BadRequestException('Pick a range of at most three years');
-        return { from, to, days };
-    }
-
-    /** Every bucket in the range, so days with nothing still appear as zero. */
-    private buckets(range: { from: string; to: string }, granularity: 'day' | 'month'): string[] {
-        const out: string[] = [];
-        const end = Date.parse(`${range.to}T00:00:00Z`);
-        if (granularity === 'day') {
-            for (let t = Date.parse(`${range.from}T00:00:00Z`); t <= end; t += DAY_MS) out.push(new Date(t).toISOString().slice(0, 10));
-            return out;
-        }
-        // Messaging labels a month by its first day.
-        const d = new Date(`${range.from.slice(0, 7)}-01T00:00:00Z`);
-        while (d.getTime() <= end) {
-            out.push(d.toISOString().slice(0, 10));
-            d.setUTCMonth(d.getUTCMonth() + 1);
-        }
-        return out;
-    }
 
     private async get<T>(path: string, actorId: string): Promise<T> {
         const base = process.env.MESSAGING_ADMIN_URL?.trim().replace(/\/+$/, '');
