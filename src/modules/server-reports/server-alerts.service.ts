@@ -5,7 +5,6 @@ import * as path from 'path';
 import * as nodemailer from 'nodemailer';
 import { ServerReportsService, type Flag } from './server-reports.service';
 import { INVENTORY } from './server-inventory';
-import { PushService } from '../push/push.service';
 
 /**
  * Emails the Server tab's critical and warning flags, so nobody has to keep the tab open.
@@ -22,8 +21,7 @@ import { PushService } from '../push/push.service';
  *   ALERT_EMAIL_TO    comma-separated recipients
  *   ALERT_EMAIL_FROM  optional, defaults to the SMTP user
  *
- * Push to the Nexus admin app is always on beside email: it reaches every active
- * ADMIN who has signed in on the app (see PushService). Email needs the settings above.
+ * Delivery goes through AlertChannel so mobile push can be added beside email.
  */
 
 export interface AlertChannel {
@@ -37,17 +35,6 @@ class EmailChannel implements AlertChannel {
     constructor(private to: string, private from: string) { }
     async send(subject: string, text: string, html: string) {
         await this.transport.sendMail({ from: this.from, to: this.to, subject, text, html });
-    }
-}
-
-/** Push to every ADMIN's phone. The title is the email subject; the body is the first issue's reason. */
-class PushChannel implements AlertChannel {
-    readonly name = 'push';
-    constructor(private push: PushService) { }
-    async send(subject: string, text: string) {
-        const body = text.split(/\r?\n/).filter((l) => l.trim() && !l.endsWith(':') && !l.startsWith('Details:')).slice(0, 3).join('\n');
-        const r = await this.push.sendToAdmins({ title: subject, body: body || subject, data: { screen: 'server' } });
-        if (r.errors.length) throw new Error(r.errors.join('; '));
     }
 }
 
@@ -68,15 +55,16 @@ export class ServerAlertsService implements OnModuleInit, OnModuleDestroy {
     private timer: ReturnType<typeof setInterval> | null = null;
     private channels: AlertChannel[] = [];
 
-    constructor(private readonly reports: ServerReportsService, private readonly push: PushService) { }
+    constructor(private readonly reports: ServerReportsService) { }
 
     onModuleInit() {
         const on = process.env.SERVER_ALERTS ? process.env.SERVER_ALERTS === 'on' : process.env.NODE_ENV === 'prod';
         if (!on) return;
         this.channels = this.buildChannels();
-        if (!this.channels.some((c) => c.name === 'email')) {
+        if (!this.channels.length) {
             // One loud line at start, not a silent gap: the dashboard still works, but nobody is told.
-            this.logger.error('Server alert emails are off: set SMTP_URL and ALERT_EMAIL_TO. Push still goes to the admin app.');
+            this.logger.error('Server alerts are on but no channel is configured: set SMTP_URL and ALERT_EMAIL_TO.');
+            return;
         }
         this.timer = setInterval(() => void this.run().catch((e) => this.logger.error(`Alert check failed: ${e}`)), INTERVAL_MS);
         this.timer.unref?.();
@@ -94,8 +82,6 @@ export class ServerAlertsService implements OnModuleInit, OnModuleDestroy {
             const user = decodeURIComponent(new URL(process.env.SMTP_URL).username);
             out.push(new EmailChannel(to, process.env.ALERT_EMAIL_FROM ?? `Nexus Server <${user}>`));
         }
-        // Always added: with nobody signed in on the app it sends to no one, which is not an error.
-        out.push(new PushChannel(this.push));
         return out;
     }
 
@@ -106,7 +92,7 @@ export class ServerAlertsService implements OnModuleInit, OnModuleDestroy {
         const errors = await this.deliver(channels, 'Nexus server alerts are working', 'This is a test. Real alerts arrive when something on the VPS needs attention.', '<p>This is a test. Real alerts arrive when something on the VPS needs attention.</p>');
         // Report the provider's refusal, not "sent": a test that hides a bad password is worse than none.
         if (errors.length) return { sent: false, reason: errors.join('; ') };
-        return { sent: true, to: process.env.ALERT_EMAIL_TO ?? null, channels: channels.map((c) => c.name) };
+        return { sent: true, to: process.env.ALERT_EMAIL_TO };
     }
 
     async run() {
