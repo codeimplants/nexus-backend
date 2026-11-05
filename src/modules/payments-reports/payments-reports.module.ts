@@ -9,5 +9,6 @@ import { PaymentsReportsService } from './payments-reports.service';
     imports: [AuthModule],
     controllers: [PaymentsReportsController],
     providers: [PaymentsReportsService, PrismaService, RolesGuard],
+    exports: [PaymentsReportsService],
 })
 export class PaymentsReportsModule { }

@@ -13,7 +13,7 @@ generator client {
 //   npx prisma migrate diff --from-schema-datasource prisma/schema.prisma \
 //                           --to-schema-datamodel  prisma/schema.prisma --script
 datasource db {
-  provider = "postgresql"
+  provider  = "postgresql"
   // Self-hosted PostgreSQL 16 on the VPS, reachable on localhost only.
   url       = env("DATABASE_URL")
   // Migrations connection. There is no pooler in front of local Postgres, so
@@ -38,6 +38,22 @@ model Admin {
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
   appCollaborators AppCollaborator[]
+  pushTokens       AdminPushToken[]
+}
+
+/// A phone running the Nexus admin app, registered for push alerts.
+/// Rows go when the admin signs out on that phone or Expo reports the token dead.
+model AdminPushToken {
+  id         String   @id @default(uuid())
+  adminId    String
+  admin      Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  token      String   @unique // ExponentPushToken[...]
+  platform   String // ios | android
+  deviceName String?
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  @@index([adminId])
 }
 
 model AppCollaborator {
@@ -54,29 +70,29 @@ model AppCollaborator {
 }
 
 model App {
-  id                  String            @id @default(uuid())
-  name                String
-  appId               String?
-  minVersionIos       String?
-  minVersionAndroid   String?
-  apiKey              String            @unique
-  description         String?
-  platforms           String[]
-  icon                String?
-  isActive            Boolean           @default(true)
+  id                      String            @id @default(uuid())
+  name                    String
+  appId                   String?
+  minVersionIos           String?
+  minVersionAndroid       String?
+  apiKey                  String            @unique
+  description             String?
+  platforms               String[]
+  icon                    String?
+  isActive                Boolean           @default(true)
   // Federation: how the platform reaches this app's own backend for
   // app-specific admin activities + on-demand phone/registration lookup.
-  backendBaseUrl      String? // e.g. https://sonebill-backend.example.com
-  backendServiceToken String? // service credential; encrypted at rest, never returned to dashboard
+  backendBaseUrl          String? // e.g. https://sonebill-backend.example.com
+  backendServiceToken     String? // service credential; encrypted at rest, never returned to dashboard
   // Path on the app's backend returning its users (id + phone + registration
   // date), used to resolve pseudonymous ids to real contacts for outreach.
   // e.g. "/api/dukandar/stats"
-  backendUsersPath    String?
+  backendUsersPath        String?
   // Base path for deleting a user on the app's own backend, invoked as
   // DELETE {backendBaseUrl}{backendDeleteUserPath}/{externalUserId}. The app's
   // own deletion process runs there (cascade + retention of basic details).
   // e.g. "/api/dukandar"
-  backendDeleteUserPath String?
+  backendDeleteUserPath   String?
   // Path returning the users this app has ALREADY deleted on its own side, so
   // Nexus can drop their telemetry rows. Positive evidence on purpose: rows are
   // removed only when they appear in this list, never because a profile lookup
@@ -90,24 +106,24 @@ model App {
   // reporting, but they are not customers and distort every behavioural read --
   // a CI phone was the single heaviest "user" on this app. Matched on the last
   // 10 digits, so +91 and bare forms are the same number.
-  excludedPhones String[] @default([])
+  excludedPhones          String[]          @default([])
   // GA4 property id for this app's own Firebase Analytics. Read access must be
   // granted to Nexus's shared reporting service account (see
   // GA4_SERVICE_ACCOUNT_KEY_PATH) via Firebase Console > Property Access
   // Management on this property — not a secret itself, so it isn't encrypted.
-  ga4PropertyId       String?
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
-  rules               VersionRule[]
-  devices             Device[]
-  analytics           AppAnalytics[]
-  endUsers            EndUser[]
-  usageSessions       UsageSession[]
-  dailyUsage          DailyUsage[]
-  maintenanceMode     MaintenanceMode?
-  storeUrls           StoreUrl[]
-  collaborators       AppCollaborator[]
-  featureFlags        FeatureFlag[]
+  ga4PropertyId           String?
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+  rules                   VersionRule[]
+  devices                 Device[]
+  analytics               AppAnalytics[]
+  endUsers                EndUser[]
+  usageSessions           UsageSession[]
+  dailyUsage              DailyUsage[]
+  maintenanceMode         MaintenanceMode?
+  storeUrls               StoreUrl[]
+  collaborators           AppCollaborator[]
+  featureFlags            FeatureFlag[]
 }
 
 /// A named switch an app reads at launch, delivered in the /sdk/version/check
@@ -121,10 +137,10 @@ model App {
 /// Keys are owned by each app, not enumerated here, so a new flag needs no
 /// migration — an app ignores keys it does not recognise.
 model FeatureFlag {
-  id     String @id @default(uuid())
-  appId  String
+  id          String   @id @default(uuid())
+  appId       String
   /// The app's flag key, e.g. "tutorials".
-  key    String
+  key         String
   /// Which platform this row applies to: android | ios | web, or "all".
   ///
   /// A plain string defaulting to "all" rather than a nullable column, because

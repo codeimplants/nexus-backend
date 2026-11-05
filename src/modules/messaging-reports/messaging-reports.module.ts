@@ -9,5 +9,6 @@ import { MessagingReportsService } from './messaging-reports.service';
     imports: [AuthModule],
     controllers: [MessagingReportsController],
     providers: [MessagingReportsService, PrismaService, RolesGuard],
+    exports: [MessagingReportsService],
 })
 export class MessagingReportsModule { }
