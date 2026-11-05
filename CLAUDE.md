@@ -134,6 +134,25 @@ read-only ops key (`PAYMENTS_ADMIN_URL` / `PAYMENTS_OPS_KEY`). The key never rea
 
 ---
 
+## The Server tab reads a root collector's files
+
+**Dashboard → All apps → Server** (ADMIN only) comes from `src/modules/server-reports`. Nexus runs as
+sanskarpandit and cannot see other accounts' PM2, every process, or other databases, so a root cron job,
+`scripts/server-collector/nexus-collect.py`, writes `/var/lib/nexus-server/` once a minute: `snapshot.json`,
+`traffic/<IST day>.json` (640 root:adm, holds visitor IPs) and `history/<IST day>.jsonl` (a sample every 10 min).
+Install or update it with `sudo bash ~/nexus-backend-prod/scripts/server-collector/install.sh`.
+
+- Per-app traffic comes from `/var/log/nginx/traffic.log`, which install.sh adds (the stock access.log has no
+  `$host`). A site block with its own `access_log` needs the `nexus_traffic` line too; install.sh adds it.
+- Which process, container, folder, database and site belongs to which app is `server-inventory.ts`. **A new
+  app on the VPS must be added there**, or it shows as unclaimed processes and "other sites".
+- The "out of the ordinary" rules live in `ServerReportsService.flags()`. Critical and warning flags are
+  emailed by `ServerAlertsService` from prod only, after two checks in a row (5 min apart), with reminders
+  and an all-clear. Needs `SMTP_URL` and `ALERT_EMAIL_TO` in prod's `.env`; without them it logs one error at
+  start. Delivery goes through `AlertChannel`, so mobile push can be added beside email.
+
+---
+
 ## Deploying
 
 `./scripts/deploy.sh --env <dev|preprod|prod>`; always pass `--yes` for non-interactive runs or prod

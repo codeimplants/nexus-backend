@@ -10,6 +10,7 @@ import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module
 import { HealthModule } from './health/health.module';
 import { MessagingReportsModule } from './modules/messaging-reports/messaging-reports.module';
 import { PaymentsReportsModule } from './modules/payments-reports/payments-reports.module';
+import { ServerReportsModule } from './modules/server-reports/server-reports.module';
 import { PrismaService } from './database/prisma.service';
 
 @Module({
@@ -32,6 +33,8 @@ import { PrismaService } from './database/prisma.service';
         MessagingReportsModule,
         // The dashboard's Payments tab, read from Code Implants Pay.
         PaymentsReportsModule,
+        // The dashboard's Server tab and its alert emails, read from the root collector's files.
+        ServerReportsModule,
     ],
     providers: [PrismaService],
 })
