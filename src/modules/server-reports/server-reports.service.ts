@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { promises as fs } from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as tls from 'tls';
 import { INVENTORY, SYSTEM_PROCESS, envOf, type Env, type InventoryApp } from './server-inventory';
@@ -44,6 +45,7 @@ interface HostDay {
     requests: number; status: Record<'2xx' | '3xx' | '4xx' | '5xx' | 'other', number>;
     bytes: number; latencySumMs: number; latency: number[]; hours: number[]; ips: string[];
 }
+export interface R2Usage { checkedAt: string; bytes: number; objects: number; limitBytes: number; paused: boolean; error?: string }
 interface TrafficDay { day: string; hosts: Record<string, HostDay> }
 interface HistorySample { t: string; load: number; cpu: number; memUsed: number; diskUsed: number; pm2: Record<string, number>; docker: Record<string, number>; restarts?: Record<string, number> }
 
@@ -213,7 +215,8 @@ export class ServerReportsService {
                 .slice(0, 10);
 
         // ---- flags
-        const flags = this.flags({ snap, apps, unclaimed, unknownPm2, unknownDocker, stoppedContainers, ageMs, memUsed, totals });
+        const r2 = await this.r2Usage();
+        const flags = this.flags({ snap, apps, unclaimed, unknownPm2, unknownDocker, stoppedContainers, r2, ageMs, memUsed, totals });
 
         return {
             collectedAt: snap.collectedAt,
@@ -228,6 +231,7 @@ export class ServerReportsService {
             unknown: { pm2: unknownPm2.map((p) => `${p.account}/${p.name}`), docker: unknownDocker.map((c) => c.name), stopped: stoppedContainers },
             idleAccounts: await this.idleAccounts(snap),
             traffic: { ...totals, otherToday: otherHosts(today), otherYesterday: otherHosts(yesterday) },
+            r2,
             flags,
         };
     }
@@ -235,7 +239,7 @@ export class ServerReportsService {
     // ================================================================= the "out of the ordinary" rules
 
     private flags(input: {
-        snap: Snapshot; apps: any[]; unclaimed: any[]; unknownPm2: any[]; unknownDocker: any[]; stoppedContainers: string[];
+        snap: Snapshot; apps: any[]; unclaimed: any[]; unknownPm2: any[]; unknownDocker: any[]; stoppedContainers: string[]; r2: R2Usage | null;
         ageMs: number; memUsed: number; totals: { today: TrafficCounts; yesterday: TrafficCounts };
     }): Flag[] {
         const { snap, apps, unclaimed, unknownPm2, unknownDocker, stoppedContainers, ageMs, memUsed, totals } = input;
@@ -262,6 +266,17 @@ export class ServerReportsService {
             add({ level: 'warning', title: `${unclaimed.length} processes belong to no app (${fmtBytes(unclaimedMem)}).`, why: unclaimed.slice(0, 3).map((p) => `${p.user}: ${p.cmd.slice(0, 50)}`).join(' · ') + '. Old services left running, or an app missing from the inventory.' });
         if (unknownPm2.length || unknownDocker.length)
             add({ level: 'info', title: 'Processes not in the inventory.', why: [...unknownPm2.map((p) => `${p.account}/${p.name}`), ...unknownDocker.map((c) => c.name)].join(', ') + '. Add them to server-inventory.ts.' });
+        // Off-site backups must stay inside Cloudflare R2's free 10 GB; ~/bin/r2-guard.sh pauses uploads at 8 GB.
+        const r2 = input.r2;
+        const GB = 1024 ** 3;
+        if (!r2 || Date.now() - Date.parse(r2.checkedAt) > 26 * 3600_000)
+            add({ level: 'warning', title: 'R2 backup usage has not been checked for a day.', why: 'Check the r2-guard cron job (~/backups/r2-guard.log). Without it nothing stops uploads at 8 GB.' });
+        else if (r2.error)
+            add({ level: 'warning', title: 'Cannot measure the R2 backup bucket.', why: `${r2.error}. Off-site uploads may be failing too.` });
+        else if (r2.paused)
+            add({ level: 'critical', title: `R2 is at ${(r2.bytes / GB).toFixed(1)} GB: off-site backups are paused.`, why: 'Uploads stop at 8 GB so the free 10 GB is never exceeded. Local backups continue. Delete old objects in R2 or shorten retention to resume.' });
+        else if (r2.bytes >= 7 * GB)
+            add({ level: 'warning', title: `R2 backups are at ${(r2.bytes / GB).toFixed(1)} GB of the 8 GB cap.`, why: 'Off-site uploads pause automatically at 8 GB. Shorten retention or delete old backups in R2 before then.' });
         if (stoppedContainers.length)
             add({ level: 'info', title: `${stoppedContainers.length} stopped Docker containers are lying around.`, why: `${stoppedContainers.join(', ')}. They hold disk but do nothing; remove them with docker rm if nobody needs them.` });
         const t = totals.yesterday;
@@ -408,6 +423,15 @@ export class ServerReportsService {
             } catch { /* no samples that day */ }
         }
         return out;
+    }
+
+    /** Written hourly by ~/bin/r2-guard.sh. */
+    private async r2Usage(): Promise<R2Usage | null> {
+        try {
+            return JSON.parse(await fs.readFile(process.env.R2_USAGE_FILE ?? path.join(os.homedir(), 'backups', 'r2-usage.json'), 'utf8'));
+        } catch {
+            return null;
+        }
     }
 
     private async idleAccounts(snap: Snapshot) {
