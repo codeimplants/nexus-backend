@@ -162,6 +162,10 @@ beside email, so Server alerts reach every active ADMIN's phone. COLLABORATOR an
 - App routes, any signed-in admin: `POST/DELETE/GET /admin/push/devices`, `POST /admin/push/test` (own phones).
 - Tokens Expo reports as `DeviceNotRegistered` are deleted on send. Receipts (the delayed APNs/FCM result) are
   not checked yet.
+- Payment and OTP problems join the same alerts through `server-reports/app-alerts.ts`: failing payments,
+  failing or blocked OTP SMS, and payments/messaging being unreachable. Payments and messaging report only day
+  totals, so each check compares with the totals from an hour earlier; after a restart only "unreachable" is
+  checked until an hour of history exists. Rules and thresholds are in the file's header.
 - `EXPO_ACCESS_TOKEN` is optional; set it only if enhanced push security is on in the Expo project.
 
 ---
