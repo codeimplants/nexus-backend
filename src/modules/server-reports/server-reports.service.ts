@@ -31,9 +31,9 @@ interface Snapshot {
         memTotal: number; memAvailable: number; swapTotal: number; swapFree: number; diskTotal: number; diskFree: number;
     };
     pm2: Array<{ account: string; name: string; pid: number; status: string; restarts: number; unstableRestarts: number; startedAt: number; memory: number; cpu: number; port: string; interpreter?: string; nodeVersion?: string }>;
-    docker: Array<{ name: string; image: string; state: string; status: string; ports: string; cpu: number; memory: number; memLimit: number }>;
+    docker: Array<{ id?: string; name: string; image: string; state: string; status: string; ports: string; cpu: number; memory: number; memLimit: number }>;
     dockerImagesBytes: number;
-    processes: Array<{ pid: number; ppid: number; user: string; rss: number; cpu: number; ageSec: number; cmd: string }>;
+    processes: Array<{ pid: number; ppid: number; user: string; rss: number; cpu: number; ageSec: number; cmd: string; container?: string | null }>;
     diskUsage: Record<string, number>;
     diskUsageAt: string;
     databases: Array<{ engine: string; name: string; bytes: number }>;
@@ -110,7 +110,8 @@ export class ServerReportsService {
             return total;
         };
         // Everything under a container runtime belongs to Docker, which reports it per container.
-        for (const p of snap.processes) if (/containerd-shim/.test(p.cmd)) treeRss(p.pid);
+        // Docker reports container memory itself, so processes inside a container are already counted.
+        for (const p of snap.processes) if (p.container || /containerd-shim/.test(p.cmd)) treeRss(p.pid);
 
         const hostOwner = new Map<string, { app: InventoryApp; env: Env }>();
         for (const app of INVENTORY)
@@ -185,7 +186,8 @@ export class ServerReportsService {
         // ---- unclaimed and shared
         for (const p of snap.pm2) if (p.pid) treeRss(p.pid); // other accounts' PM2 apps not in the inventory still count as claimed
         const unknownPm2 = snap.pm2.filter((p) => !INVENTORY.some((a) => a.account === p.account && a.pm2?.test(p.name)));
-        const unknownDocker = snap.docker.filter((c) => !INVENTORY.some((a) => a.docker?.test(c.name)));
+        const unknownDocker = snap.docker.filter((c) => c.state === 'running' && !INVENTORY.some((a) => a.docker?.test(c.name)));
+        const stoppedContainers = snap.docker.filter((c) => c.state !== 'running').map((c) => c.name);
         const shared: Array<{ name: string; memory: number }> = [];
         const unclaimed: Array<{ user: string; pid: number; cmd: string; memory: number; ageSec: number }> = [];
         for (const p of snap.processes) {
@@ -210,7 +212,7 @@ export class ServerReportsService {
                 .slice(0, 10);
 
         // ---- flags
-        const flags = this.flags({ snap, apps, unclaimed, unknownPm2, unknownDocker, ageMs, memUsed, totals });
+        const flags = this.flags({ snap, apps, unclaimed, unknownPm2, unknownDocker, stoppedContainers, ageMs, memUsed, totals });
 
         return {
             collectedAt: snap.collectedAt,
@@ -222,7 +224,7 @@ export class ServerReportsService {
             shared,
             dockerImagesBytes: snap.dockerImagesBytes,
             unclaimed: unclaimed.sort((a, b) => b.memory - a.memory),
-            unknown: { pm2: unknownPm2.map((p) => `${p.account}/${p.name}`), docker: unknownDocker.map((c) => c.name) },
+            unknown: { pm2: unknownPm2.map((p) => `${p.account}/${p.name}`), docker: unknownDocker.map((c) => c.name), stopped: stoppedContainers },
             idleAccounts: await this.idleAccounts(snap),
             traffic: { ...totals, otherToday: otherHosts(today), otherYesterday: otherHosts(yesterday) },
             flags,
@@ -232,10 +234,10 @@ export class ServerReportsService {
     // ================================================================= the "out of the ordinary" rules
 
     private flags(input: {
-        snap: Snapshot; apps: any[]; unclaimed: any[]; unknownPm2: any[]; unknownDocker: any[];
+        snap: Snapshot; apps: any[]; unclaimed: any[]; unknownPm2: any[]; unknownDocker: any[]; stoppedContainers: string[];
         ageMs: number; memUsed: number; totals: { today: TrafficCounts; yesterday: TrafficCounts };
     }): Flag[] {
-        const { snap, apps, unclaimed, unknownPm2, unknownDocker, ageMs, memUsed, totals } = input;
+        const { snap, apps, unclaimed, unknownPm2, unknownDocker, stoppedContainers, ageMs, memUsed, totals } = input;
         const sys = snap.system;
         const out: Flag[] = [];
         const add = (f: Flag) => out.push(f);
@@ -259,6 +261,8 @@ export class ServerReportsService {
             add({ level: 'warning', title: `${unclaimed.length} processes belong to no app (${fmtBytes(unclaimedMem)}).`, why: unclaimed.slice(0, 3).map((p) => `${p.user}: ${p.cmd.slice(0, 50)}`).join(' · ') + '. Old services left running, or an app missing from the inventory.' });
         if (unknownPm2.length || unknownDocker.length)
             add({ level: 'info', title: 'Processes not in the inventory.', why: [...unknownPm2.map((p) => `${p.account}/${p.name}`), ...unknownDocker.map((c) => c.name)].join(', ') + '. Add them to server-inventory.ts.' });
+        if (stoppedContainers.length)
+            add({ level: 'info', title: `${stoppedContainers.length} stopped Docker containers are lying around.`, why: `${stoppedContainers.join(', ')}. They hold disk but do nothing; remove them with docker rm if nobody needs them.` });
         const t = totals.yesterday;
         if (t.requests > 100 && t.errors5xx / t.requests > 0.01)
             add({ level: 'warning', title: `${pct(t.errors5xx, t.requests)}% of yesterday's requests failed with a server error.`, why: 'Look at the apps below with the most 5xx.' });
@@ -267,6 +271,7 @@ export class ServerReportsService {
         const running = apps.filter((a) => a.memory > 0);
         const medMem = median(running.map((a) => a.memory));
         const medDisk = median(apps.map((a) => a.disk).filter((d) => d > 0));
+        const medHealth = median(apps.map((a) => a.health.ms).filter((m): m is number => m !== null));
         const heaviest = [...running].sort((a, b) => b.memory - a.memory)[0];
 
         for (const a of apps) {
@@ -301,9 +306,9 @@ export class ServerReportsService {
                     f({ level: 'warning', title: `${e.name} is at ${pct(e.memory, e.memLimit)}% of its memory cap.`, why: `Docker kills it at ${fmtBytes(e.memLimit)}.` });
             // Test environments heavier than prod.
             const prodMem = a.envs.filter((e: any) => e.env === 'prod').reduce((n: number, e: any) => n + e.memory, 0);
-            const testMem = a.envs.filter((e: any) => e.env === 'dev' || e.env === 'preprod').reduce((n: number, e: any) => n + e.memory, 0);
-            if (prodMem > 0 && testMem > prodMem && testMem > 200 * MB)
-                f({ level: 'info', title: 'Dev and preprod use more memory than prod.', why: `${fmtBytes(testMem)} against ${fmtBytes(prodMem)} for prod. Stopping them when nobody is testing frees that.` });
+            const heavyTest = a.envs.filter((e: any) => (e.env === 'dev' || e.env === 'preprod') && e.memory > prodMem * 1.2 && e.memory > 150 * MB);
+            if (prodMem > 0 && heavyTest.length)
+                f({ level: 'info', title: `${heavyTest.map((e: any) => e.name).join(' and ')} uses more memory than prod.`, why: `${heavyTest.map((e: any) => fmtBytes(e.memory)).join(', ')} against ${fmtBytes(prodMem)} for prod, which takes the real traffic. Often a leak or debug mode left on.` });
 
             // Restart loops.
             for (const e of a.envs) {
@@ -323,7 +328,7 @@ export class ServerReportsService {
             const h = a.health;
             if (h.state === 'down') f({ level: up('critical', a.critical), title: 'Prod is not responding.', why: `${a.domain}/health: ${h.detail}.` });
             else if (h.state === 'unchecked') f({ level: 'info', title: 'No working health check.', why: `${a.domain}/health answers ${h.code}, so the dashboard can only tell that the site is reachable. Add a public /health.` });
-            else if (h.ms !== null && h.ms > 300) f({ level: 'info', title: `Slow health check: ${h.ms} ms.`, why: 'Several times slower than the other apps. It may be doing real work on every check.' });
+            else if (h.ms !== null && h.ms > 300 && h.ms > 3 * medHealth) f({ level: 'info', title: `Slow health check: ${h.ms} ms.`, why: `${(h.ms / Math.max(medHealth, 1)).toFixed(0)}× slower than a typical app here (${medHealth} ms). It may be doing real work on every check.` });
             if (a.cert && a.cert.days <= 14)
                 f({ level: a.cert.days <= 7 ? 'critical' : 'warning', title: `SSL certificate expires in ${a.cert.days} days.`, why: 'Certbot normally renews at 30 days left, so it has failed. Run certbot renew.' });
 
@@ -417,7 +422,9 @@ export class ServerReportsService {
 
     private async checkAll() {
         const domains = INVENTORY.map((a) => ({ host: a.hosts.prod?.[0], path: a.healthPath ?? '/health' })).filter((d) => d.host) as { host: string; path: string }[];
-        await Promise.all(domains.map((d) => Promise.all([this.check(d.host, d.path), this.cert(d.host)])));
+        // Health one at a time, so the timings are not inflated by a dozen handshakes at once; certificates in parallel after.
+        for (const d of domains) await this.check(d.host, d.path);
+        await Promise.all(domains.map((d) => this.cert(d.host)));
         return this.health;
     }
 

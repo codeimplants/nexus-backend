@@ -117,8 +117,17 @@ def processes():
             continue
         pid, ppid, user, rss, pcpu, etimes, args = parts
         procs.append({'pid': int(pid), 'ppid': int(ppid), 'user': user, 'rss': int(rss) * 1024,
-                      'cpu': float(pcpu), 'ageSec': int(etimes), 'cmd': args[:300]})
+                      'cpu': float(pcpu), 'ageSec': int(etimes), 'cmd': args[:300], 'container': container_of(pid)})
     return procs
+
+
+def container_of(pid):
+    """The Docker container a process runs in (first 12 characters of its id), from its cgroup."""
+    try:
+        m = re.search(r'docker[-/]([0-9a-f]{12})', open(f'/proc/{pid}/cgroup').read())
+        return m.group(1) if m else None
+    except Exception:
+        return None
 
 
 def pm2_lists():
@@ -171,7 +180,7 @@ def docker():
             continue
         s = stats.get(c['Names'], {})
         containers.append({
-            'name': c['Names'], 'image': c['Image'], 'state': c.get('State'), 'status': c.get('Status'),
+            'id': c.get('ID', '')[:12], 'name': c['Names'], 'image': c['Image'], 'state': c.get('State'), 'status': c.get('Status'),
             'ports': c.get('Ports', ''), 'cpu': pct(s.get('CPUPerc')), 'memory': size(s.get('MemUsage', '').split('/')[0]),
             'memLimit': size((s.get('MemUsage', '/').split('/') + [''])[1]),
         })
