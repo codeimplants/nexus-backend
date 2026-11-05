@@ -45,7 +45,7 @@ interface HostDay {
     bytes: number; latencySumMs: number; latency: number[]; hours: number[]; ips: string[];
 }
 interface TrafficDay { day: string; hosts: Record<string, HostDay> }
-interface HistorySample { t: string; load: number; cpu: number; memUsed: number; diskUsed: number; pm2: Record<string, number>; docker: Record<string, number> }
+interface HistorySample { t: string; load: number; cpu: number; memUsed: number; diskUsed: number; pm2: Record<string, number>; docker: Record<string, number>; restarts?: Record<string, number> }
 
 // ------------------------------------------------------------------ what the dashboard gets
 
@@ -128,6 +128,7 @@ export class ServerReportsService {
                         const tree = p.pid ? treeRss(p.pid) : 0;
                         return {
                             name: p.name, kind: 'pm2' as const, env: envOf(p.name), port: p.port || null, status: p.status,
+                            restarts24h: restartsSince(history, `${p.account}/${p.name}`, p.restarts, Date.now() - 24 * 3600_000),
                             memory: Math.max(tree, p.memory), memLimit: null as number | null, cpu: p.cpu, restarts: p.restarts,
                             uptimeSec: p.startedAt && p.status === 'online' ? Math.round((Date.now() - p.startedAt) / 1000) : 0,
                             runtime: p.nodeVersion ? `Node ${p.nodeVersion}` : p.interpreter ?? null,
@@ -138,7 +139,7 @@ export class ServerReportsService {
                     .map((c) => ({
                         name: c.name, kind: 'docker' as const, env: envOf(c.name), port: c.ports.match(/:(\d+)->/)?.[1] ?? null,
                         status: c.state === 'running' ? 'online' : c.state, memory: c.memory, memLimit: c.memLimit || null, cpu: c.cpu,
-                        restarts: 0, uptimeSec: null as number | null, runtime: c.image,
+                        restarts: 0, restarts24h: null as number | null, uptimeSec: null as number | null, runtime: c.image,
                     })),
             ].sort((a, b) => b.memory - a.memory);
 
@@ -312,8 +313,9 @@ export class ServerReportsService {
 
             // Restart loops.
             for (const e of a.envs) {
-                if (e.restarts >= 20)
-                    f({ level: up(e.env === 'prod' ? 'warning' : 'info', a.critical && e.env === 'prod'), title: `${e.name} has restarted ${e.restarts} times.`, why: 'Usually a crash that PM2 keeps bringing back. Its error log will say why.' });
+                // PM2's restart count never resets and includes deploys, so only recent restarts mean anything.
+                if (e.restarts24h !== null && e.restarts24h >= 5)
+                    f({ level: up(e.env === 'prod' ? 'warning' : 'info', a.critical && e.env === 'prod'), title: `${e.name} restarted ${e.restarts24h} times in 24 hours.`, why: 'More than deploys explain. Usually a crash that PM2 keeps bringing back; its error log will say why.' });
                 else if (e.uptimeSec !== null && e.uptimeSec < 600 && e.restarts > 3)
                     f({ level: 'warning', title: `${e.name} restarted in the last 10 minutes.`, why: `${e.restarts} restarts so far. Watch whether it settles.` });
             }
@@ -326,8 +328,8 @@ export class ServerReportsService {
 
             // Health and certificates.
             const h = a.health;
-            if (h.state === 'down') f({ level: up('critical', a.critical), title: 'Prod is not responding.', why: `${a.domain}/health: ${h.detail}.` });
-            else if (h.state === 'unchecked') f({ level: 'info', title: 'No working health check.', why: `${a.domain}/health answers ${h.code}, so the dashboard can only tell that the site is reachable. Add a public /health.` });
+            if (h.state === 'down') f({ level: up('critical', a.critical), title: 'Prod is not responding.', why: `Its health check: ${h.detail}.` });
+            else if (h.state === 'unchecked') f({ level: 'info', title: 'No working health check.', why: `Its health check answers ${h.code}, so the dashboard can only tell that the site is reachable. Add a public /health.` });
             else if (h.ms !== null && h.ms > 300 && h.ms > 3 * medHealth) f({ level: 'info', title: `Slow health check: ${h.ms} ms.`, why: `${(h.ms / Math.max(medHealth, 1)).toFixed(0)}× slower than a typical app here (${medHealth} ms). It may be doing real work on every check.` });
             if (a.cert && a.cert.days <= 14)
                 f({ level: a.cert.days <= 7 ? 'critical' : 'warning', title: `SSL certificate expires in ${a.cert.days} days.`, why: 'Certbot normally renews at 30 days left, so it has failed. Run certbot renew.' });
@@ -421,19 +423,19 @@ export class ServerReportsService {
     // ================================================================= health and certificates
 
     private async checkAll() {
-        const domains = INVENTORY.map((a) => ({ host: a.hosts.prod?.[0], path: a.healthPath ?? '/health' })).filter((d) => d.host) as { host: string; path: string }[];
+        const domains = INVENTORY.map((a) => ({ host: a.hosts.prod?.[0], url: a.healthUrl ?? `https://${a.hosts.prod?.[0]}${a.healthPath ?? '/health'}` })).filter((d) => d.host) as { host: string; url: string }[];
         // Health one at a time, so the timings are not inflated by a dozen handshakes at once; certificates in parallel after.
-        for (const d of domains) await this.check(d.host, d.path);
+        for (const d of domains) await this.check(d.host, d.url);
         await Promise.all(domains.map((d) => this.cert(d.host)));
         return this.health;
     }
 
-    private async check(host: string, p: string) {
+    private async check(host: string, url: string) {
         const cached = this.health.get(host);
         if (cached && Date.now() - cached.at < HEALTH_TTL_MS) return;
         const start = Date.now();
         try {
-            const res = await fetch(`https://${host}${p}`, { signal: AbortSignal.timeout(8000), redirect: 'manual' });
+            const res = await fetch(url, { signal: AbortSignal.timeout(8000), redirect: 'manual' });
             await res.arrayBuffer();
             this.health.set(host, { at: Date.now(), code: res.status, ms: Date.now() - start });
         } catch (e) {
@@ -507,6 +509,13 @@ function appMemoryIn(s: HistorySample, app: InventoryApp) {
     }
     for (const [name, mem] of Object.entries(s.docker ?? {})) if (app.docker?.test(name)) total += mem;
     return total;
+}
+
+/** Restarts since `at`: today's count minus the count in the oldest sample after it, or null without that history. */
+function restartsSince(history: HistorySample[], key: string, now: number, at: number) {
+    const then = history.find((s) => Date.parse(s.t) >= at && s.restarts?.[key] !== undefined);
+    if (!then || Date.parse(then.t) > at + 3 * 3600_000) return null;
+    return Math.max(now - then.restarts![key], 0);
 }
 
 /** The app's memory in the sample nearest to `at` and in the latest sample, measured the same way, or null without a day of history. */

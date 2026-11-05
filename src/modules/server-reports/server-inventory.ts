@@ -28,6 +28,8 @@ export interface InventoryApp {
     hosts: Partial<Record<Env, string[]>>;
     /** Checked once a minute; anything other than 2xx means "no working health check" or down. */
     healthPath?: string;
+    /** A full URL to check instead, e.g. over loopback when the app keeps its health endpoint off nginx. */
+    healthUrl?: string;
     /** Money or logins depend on it: problems are raised a level higher. */
     critical?: boolean;
 }
@@ -97,6 +99,8 @@ export const INVENTORY: InventoryApp[] = [
     {
         id: 'restobill', name: 'RestoBill', stack: 'Java 21 (Spring) · Docker', account: 'sanskarpandit',
         docker: /^restobill-/, folders: ['restobill'], database: 'Postgres 16 + Redis (own containers)',
+        // Spring's /actuator/health is deliberately not proxied by nginx (restobill-backend deploy/README.md).
+        healthUrl: 'http://127.0.0.1:8100/actuator/health',
         hosts: { prod: ['api.restobill.codeimplants.com'], dev: ['dev.api.restobill.codeimplants.com'] },
     },
     {

@@ -404,6 +404,7 @@ def main():
             'memUsed': s['memTotal'] - s['memAvailable'], 'diskUsed': s['diskTotal'] - s['diskFree'],
             'pm2': {f"{p['account']}/{p['name']}": p['memory'] for p in snap['pm2']},
             'docker': {c['name']: c['memory'] for c in containers},
+            'restarts': {f"{p['account']}/{p['name']}": p['restarts'] for p in snap['pm2']},
         }
         day = datetime.now(IST).strftime('%Y-%m-%d')
         path = f'{OUT}/history/{day}.jsonl'
