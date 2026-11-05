@@ -11,6 +11,7 @@ import { HealthModule } from './health/health.module';
 import { MessagingReportsModule } from './modules/messaging-reports/messaging-reports.module';
 import { PaymentsReportsModule } from './modules/payments-reports/payments-reports.module';
 import { ServerReportsModule } from './modules/server-reports/server-reports.module';
+import { PushModule } from './modules/push/push.module';
 import { PrismaService } from './database/prisma.service';
 
 @Module({
@@ -35,6 +36,8 @@ import { PrismaService } from './database/prisma.service';
         PaymentsReportsModule,
         // The dashboard's Server tab and its alert emails, read from the root collector's files.
         ServerReportsModule,
+        // Phones running the Nexus admin app, and push alerts to them through Expo.
+        PushModule,
     ],
     providers: [PrismaService],
 })

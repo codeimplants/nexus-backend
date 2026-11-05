@@ -153,6 +153,19 @@ Install or update it with `sudo bash ~/nexus-backend-prod/scripts/server-collect
 
 ---
 
+## Push alerts go to the Nexus admin app
+
+`src/modules/push` keeps one `AdminPushToken` row per phone signed in on the Expo app (`nexus-mobile`) and
+sends through Expo's push service (APNs + FCM in one call). `ServerAlertsService` always adds a `PushChannel`
+beside email, so Server alerts reach every active ADMIN's phone. COLLABORATOR and LEAD_GEN get none.
+
+- App routes, any signed-in admin: `POST/DELETE/GET /admin/push/devices`, `POST /admin/push/test` (own phones).
+- Tokens Expo reports as `DeviceNotRegistered` are deleted on send. Receipts (the delayed APNs/FCM result) are
+  not checked yet.
+- `EXPO_ACCESS_TOKEN` is optional; set it only if enhanced push security is on in the Expo project.
+
+---
+
 ## Deploying
 
 `./scripts/deploy.sh --env <dev|preprod|prod>`; always pass `--yes` for non-interactive runs or prod
