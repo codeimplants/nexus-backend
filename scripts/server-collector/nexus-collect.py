@@ -269,6 +269,83 @@ def databases():
     return dbs
 
 
+DB_SCHEMES = ('mongodb', 'mongodb+srv', 'postgres', 'postgresql', 'mysql', 'redis')
+LOCAL_HOSTS = ('127.0.0.1', 'localhost', '::1', '[::1]')
+
+
+def db_endpoints():
+    """
+    Every database the apps connect to, found in their .env files, with its size.
+
+    Only the scheme, server name(s) and database name are kept: the login is
+    split off and dropped before anything is stored. Sizes are read with the
+    app's own connection string (so cloud databases such as MongoDB Atlas are
+    measured too) and never written anywhere.
+    """
+    from urllib.parse import urlsplit
+    seen, out = {}, []
+    files = run(['find', '/home', '-maxdepth', '5', '-name', '.env', '-not', '-path', '*/node_modules/*',
+                 '-not', '-path', '*/.git/*', '-not', '-path', '*/backups/*'], timeout=60, partial=True).split()
+    for path in files:
+        try:
+            lines = open(path, encoding='utf-8', errors='replace').read().splitlines()
+        except Exception:
+            continue
+        for line in lines:
+            if '=' not in line or line.lstrip().startswith('#'):
+                continue
+            key, val = line.split('=', 1)
+            val = val.strip().strip('"').strip("'")
+            scheme = val.split('://', 1)[0].lower() if '://' in val else ''
+            if scheme not in DB_SCHEMES:
+                continue
+            try:
+                u = urlsplit(val)
+                hosts = u.netloc.rsplit('@', 1)[-1]          # drop user:password
+                database = u.path.lstrip('/').split('/')[0]
+            except Exception:
+                continue
+            ident = (scheme, hosts, database)
+            entry = {'file': path, 'key': key.strip()[:60], 'scheme': scheme, 'hosts': hosts[:300], 'database': database[:120]}
+            if ident not in seen:
+                seen[ident] = db_size(scheme, val, database)
+            entry.update(seen[ident])
+            out.append(entry)
+    return out
+
+
+def db_size(scheme, uri, database):
+    """Size in bytes, measured with the app's own connection string. The URI is passed to the tool and nothing else."""
+    try:
+        if scheme.startswith('mongodb') and database:
+            # Number(): Atlas answers with 64-bit Long objects ({low, high}), not plain numbers.
+            js = 'const s=db.stats();print(JSON.stringify({d:Number(s.dataSize),s:Number(s.storageSize),i:Number(s.indexSize)}))'
+            r = subprocess.run(['mongosh', uri, '--quiet', '--norc', '--eval', js], capture_output=True, text=True, timeout=30)
+            s = json.loads(r.stdout.strip().splitlines()[-1])
+            return {'bytes': int(s['s'] + s['i']), 'dataBytes': int(s['d'])}
+        if scheme.startswith('postgres'):
+            r = subprocess.run(['psql', uri.split('?')[0], '-Atc', 'select pg_database_size(current_database())'],
+                               capture_output=True, text=True, timeout=30)
+            return {'bytes': int(r.stdout.strip())}
+    except Exception:
+        pass
+    return {'bytes': None}
+
+
+def extra_databases():
+    """Databases with no URL in a .env: RestoBill's own Postgres container and Gold Rate's SQLite files."""
+    out = []
+    q = "select datname, pg_database_size(datname) from pg_database where datname like 'restobill%'"
+    for line in run(['docker', 'exec', 'restobill-postgres', 'psql', '-U', 'restobill_admin', '-d', 'postgres', '-AtF', '\t', '-c', q]).splitlines():
+        name, b = line.split('\t')
+        out.append({'scheme': 'postgresql', 'hosts': 'restobill-postgres (Docker)', 'database': name, 'bytes': int(b), 'docker': True})
+    for env in ('prod', 'dev'):
+        p = f'/home/sanskarpandit/goldrate/{env}/data/goldrate.db'
+        if os.path.exists(p):
+            out.append({'scheme': 'sqlite', 'hosts': 'file on VPS', 'database': p, 'bytes': os.path.getsize(p)})
+    return out
+
+
 # ---------------------------------------------------------------- traffic
 
 def lat_bucket(ms):
@@ -374,8 +451,9 @@ def main():
     if now - state.get('duAt', 0) > DU_EVERY or 'du' not in state:
         state['du'] = disk_usage()
         state['duAt'] = now
-    if now - state.get('dbAt', 0) > DB_EVERY or 'db' not in state:
+    if now - state.get('dbAt', 0) > DB_EVERY or 'dbEndpoints' not in state:
         state['db'] = databases()
+        state['dbEndpoints'] = db_endpoints() + extra_databases()
         state['dbAt'] = now
 
     traffic_on = read_traffic(state)
@@ -392,6 +470,7 @@ def main():
         'diskUsage': state['du'],
         'diskUsageAt': datetime.fromtimestamp(state['duAt'], timezone.utc).isoformat(),
         'databases': state['db'],
+        'dbEndpoints': state.get('dbEndpoints', []),
         'trafficLog': traffic_on,
     }
     write_json(f'{OUT}/snapshot.json', snap)

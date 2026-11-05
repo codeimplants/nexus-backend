@@ -98,7 +98,7 @@ export const INVENTORY: InventoryApp[] = [
     },
     {
         id: 'restobill', name: 'RestoBill', stack: 'Java 21 (Spring) · Docker', account: 'sanskarpandit',
-        docker: /^restobill-/, folders: ['restobill'], database: 'Postgres 16 + Redis (own containers)',
+        docker: /^restobill-/, folders: ['restobill'], databases: /^restobill/, database: 'Postgres 16 + Redis (own containers)',
         // Spring's /actuator/health is deliberately not proxied by nginx (restobill-backend deploy/README.md).
         healthUrl: 'http://127.0.0.1:8100/actuator/health',
         hosts: { prod: ['api.restobill.codeimplants.com'], dev: ['dev.api.restobill.codeimplants.com'] },

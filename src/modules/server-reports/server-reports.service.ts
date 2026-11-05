@@ -38,6 +38,8 @@ interface Snapshot {
     diskUsage: Record<string, number>;
     diskUsageAt: string;
     databases: Array<{ engine: string; name: string; bytes: number }>;
+    /** Every database an app connects to (from its .env), with its size. Never holds a login. */
+    dbEndpoints?: Array<{ file?: string; key?: string; scheme: string; hosts: string; database: string; bytes: number | null; docker?: boolean }>;
     trafficLog: boolean;
 }
 
@@ -154,7 +156,9 @@ export class ServerReportsService {
                 })
                 .map(([p, bytes]) => ({ path: p, bytes }))
                 .sort((a, b) => b.bytes - a.bytes);
-            const dbs = snap.databases.filter((d) => app.databases?.test(d.name));
+            const dbList = appDatabases(app, snap.dbEndpoints ?? []);
+            const onVps = dbList.filter((d) => d.where !== 'cloud');
+            const dbs = onVps.map((d) => ({ engine: d.engine, name: d.database, bytes: d.bytes ?? 0 }));
             const disk = folders.reduce((n, f) => n + f.bytes, 0) + dbs.reduce((n, d) => n + d.bytes, 0);
             const memory = envs.reduce((n, e) => n + e.memory, 0);
 
@@ -168,7 +172,12 @@ export class ServerReportsService {
                 id: app.id, name: app.name, stack: app.stack, account: app.account, database: app.database, domain,
                 runner: [...new Set(envs.map((e) => (e.kind === 'pm2' ? 'PM2' : 'Docker')))].join(' + ') || '—',
                 runtimes: [...new Set(envs.map((e) => e.runtime).filter(Boolean))],
-                envs, memory, memoryShare: pct(memory, sys.memTotal), disk, folders, databases: dbs,
+                envs, memory, memoryShare: pct(memory, sys.memTotal), disk, folders, databases: dbs, dbList,
+                dbWhere: [...new Set(dbList.filter((d) => d.engine !== 'Redis').map((d) => d.where))].sort(),
+                dbBytes: {
+                    vps: onVps.reduce((n, d) => n + (d.bytes ?? 0), 0),
+                    cloud: dbList.filter((d) => d.where === 'cloud').reduce((n, d) => n + (d.bytes ?? 0), 0),
+                },
                 health: describeHealth(h),
                 cert: cert?.expiresAt ? { expiresAt: cert.expiresAt, days: Math.floor((Date.parse(cert.expiresAt) - Date.now()) / 86_400_000) } : null,
                 traffic: {
@@ -227,6 +236,11 @@ export class ServerReportsService {
             apps: apps.sort((a, b) => b.memory - a.memory),
             shared,
             dockerImagesBytes: snap.dockerImagesBytes,
+            dbTotals: {
+                vps: apps.reduce((n, a) => n + a.dbBytes.vps, 0),
+                cloud: apps.reduce((n, a) => n + a.dbBytes.cloud, 0),
+                cloudClusters: cloudClusters(apps.flatMap((a) => a.dbList.map((d) => ({ ...d, app: a.name })))),
+            },
             unclaimed: unclaimed.sort((a, b) => b.memory - a.memory),
             unknown: { pm2: unknownPm2.map((p) => `${p.account}/${p.name}`), docker: unknownDocker.map((c) => c.name), stopped: stoppedContainers },
             idleAccounts: await this.idleAccounts(snap),
@@ -287,6 +301,11 @@ export class ServerReportsService {
         const running = apps.filter((a) => a.memory > 0);
         const medMem = median(running.map((a) => a.memory));
         const medDisk = median(apps.map((a) => a.disk).filter((d) => d > 0));
+        // MongoDB Atlas free clusters (M0) hold 512 MB in all; the apps share clusters, so add them up.
+        for (const c of cloudClusters(apps.flatMap((a: any) => a.dbList.map((d: AppDatabase) => ({ ...d, app: a.name }))))) {
+            if (c.provider === 'MongoDB Atlas' && c.bytes >= 400 * MB)
+                add({ level: c.bytes >= 480 * MB ? 'critical' : 'warning', title: `Atlas cluster ${c.host} holds ${fmtBytes(c.bytes)}.`, why: `A free (M0) cluster stops accepting writes at 512 MB. Used by ${c.apps.join(', ')}. Clean up old data, or move to a paid tier or to this server.` });
+        }
         const medHealth = median(apps.map((a) => a.health.ms).filter((m): m is number => m !== null));
         const heaviest = [...running].sort((a, b) => b.memory - a.memory)[0];
 
@@ -533,6 +552,65 @@ function appMemoryIn(s: HistorySample, app: InventoryApp) {
     }
     for (const [name, mem] of Object.entries(s.docker ?? {})) if (app.docker?.test(name)) total += mem;
     return total;
+}
+
+export interface AppDatabase {
+    env: Env | 'shared'; engine: string; where: 'vps' | 'docker' | 'cloud'; provider: string;
+    host: string; database: string; bytes: number | null;
+}
+
+const ENGINE: Record<string, string> = { mongodb: 'MongoDB', 'mongodb+srv': 'MongoDB', postgres: 'PostgreSQL', postgresql: 'PostgreSQL', mysql: 'MySQL', redis: 'Redis', sqlite: 'SQLite' };
+const LOCAL = /^(127\.0\.0\.1|localhost|\[?::1\]?)(:\d+)?$/;
+
+/** Where a database runs, from its server name alone. */
+function locate(hosts: string, docker?: boolean): { where: AppDatabase['where']; provider: string; host: string } {
+    const first = hosts.split(',')[0];
+    if (docker) return { where: 'docker', provider: 'Docker on this VPS', host: hosts };
+    if (hosts === 'file on VPS') return { where: 'vps', provider: 'File on this VPS', host: hosts };
+    if (LOCAL.test(first)) return { where: 'vps', provider: 'This VPS', host: first };
+    if (/mongodb\.net/.test(first)) return { where: 'cloud', provider: 'MongoDB Atlas', host: first.replace(/-shard-\d+-\d+/, '').replace(/:\d+$/, '') };
+    if (/neon\.tech/.test(first)) return { where: 'cloud', provider: 'Neon', host: first };
+    if (/supabase\./.test(first)) return { where: 'cloud', provider: 'Supabase', host: first };
+    if (/^[a-z0-9_-]+(:\d+)?$/i.test(first)) return { where: 'docker', provider: 'Docker on this VPS', host: first };
+    return { where: 'cloud', provider: 'External', host: first.replace(/:\d+$/, '') };
+}
+
+/** The app's databases, one row per environment and database, from the collector's .env scan. */
+function appDatabases(app: InventoryApp, endpoints: NonNullable<Snapshot['dbEndpoints']>): AppDatabase[] {
+    const prefix = `/home/${app.account}/`;
+    const mine = endpoints.filter((e) => {
+        if (e.file) {
+            if (!e.file.startsWith(prefix)) return false;
+            const top = e.file.slice(prefix.length).split('/')[0];
+            return app.folders.some((f) => (f.endsWith('*') ? top.startsWith(f.slice(0, -1)) : top === f));
+        }
+        return !!app.databases?.test(e.database);
+    });
+    const rows = new Map<string, AppDatabase>();
+    for (const e of mine) {
+        // The variable name says which environment (sonebill's dev .env also lists PROD_DB_URL); else the folder does.
+        const k = (e.key ?? '').toUpperCase();
+        const env: AppDatabase['env'] = /PREPROD/.test(k) ? 'preprod' : /PROD/.test(k) ? 'prod' : /DEV/.test(k) ? 'dev' : envOf(e.file ?? e.database);
+        const loc = locate(e.hosts, e.docker);
+        const id = `${env}|${e.scheme}|${loc.host}|${e.database}`;
+        if (rows.has(id)) continue;
+        rows.set(id, { env, engine: ENGINE[e.scheme] ?? e.scheme, ...loc, database: e.scheme === 'redis' ? `db ${e.database || 0}` : e.database.split('/').pop() ?? e.database, bytes: e.bytes });
+    }
+    const order = { prod: 0, preprod: 1, dev: 2, shared: 3 } as const;
+    return [...rows.values()].sort((a, b) => order[a.env] - order[b.env] || a.engine.localeCompare(b.engine));
+}
+
+/** Cloud database servers with the space all their databases take, for free-tier limits. */
+function cloudClusters(dbs: Array<AppDatabase & { app?: string }>) {
+    const by = new Map<string, { host: string; provider: string; bytes: number; apps: string[] }>();
+    for (const d of dbs) {
+        if (d.where !== 'cloud') continue;
+        const c = by.get(d.host) ?? { host: d.host, provider: d.provider, bytes: 0, apps: [] };
+        c.bytes += d.bytes ?? 0;
+        if (d.app && !c.apps.includes(d.app)) c.apps.push(d.app);
+        by.set(d.host, c);
+    }
+    return [...by.values()];
 }
 
 /** Restarts since `at`: today's count minus the count in the oldest sample after it, or null without that history. */
