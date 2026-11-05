@@ -9,9 +9,9 @@ import { INVENTORY } from './server-inventory';
 /**
  * Emails the Server tab's critical and warning flags, so nobody has to keep the tab open.
  *
- * Runs in prod only (or with SERVER_ALERTS=on): all three Nexus environments
- * read the same server, and three copies of every alert would teach people to
- * ignore them. A flag must show on two checks in a row (5 minutes apart) before
+ * Runs in prod only (NODE_ENV=prod), with no override, and the test button is
+ * refused elsewhere too: all three Nexus environments read the same server, and
+ * three copies of every alert would teach people to ignore them. A flag must show on two checks in a row (5 minutes apart) before
  * it is sent, so a deploy's restart does not page anyone. While it lasts it is
  * repeated every 6 hours (critical) or 24 hours (warning), and an "all clear"
  * goes out when it ends. Info flags stay on the dashboard.
@@ -41,6 +41,7 @@ class EmailChannel implements AlertChannel {
 interface OpenAlert { flag: Flag; firstSeen: string; seen: number; sentAt: string | null }
 
 const INTERVAL_MS = 5 * 60_000;
+const IS_PROD = () => process.env.NODE_ENV === 'prod';
 const REPEAT_MS = { critical: 6 * 3600_000, warning: 24 * 3600_000, info: Infinity };
 const STATE = () => process.env.SERVER_ALERT_STATE ?? path.join(os.homedir(), '.nexus', 'server-alerts.json');
 
@@ -58,8 +59,7 @@ export class ServerAlertsService implements OnModuleInit, OnModuleDestroy {
     constructor(private readonly reports: ServerReportsService) { }
 
     onModuleInit() {
-        const on = process.env.SERVER_ALERTS ? process.env.SERVER_ALERTS === 'on' : process.env.NODE_ENV === 'prod';
-        if (!on) return;
+        if (!IS_PROD()) return;
         this.channels = this.buildChannels();
         if (!this.channels.length) {
             // One loud line at start, not a silent gap: the dashboard still works, but nobody is told.
@@ -87,6 +87,7 @@ export class ServerAlertsService implements OnModuleInit, OnModuleDestroy {
 
     /** Sends one email through every channel; the dashboard's "Send test alert" button. */
     async test() {
+        if (!IS_PROD()) return { sent: false, reason: 'Server alerts are sent from prod only. Use the test button on the prod dashboard.' };
         const channels = this.channels.length ? this.channels : this.buildChannels();
         if (!channels.length) return { sent: false, reason: 'Set SMTP_URL and ALERT_EMAIL_TO in this environment\'s .env' };
         const errors = await this.deliver(channels, 'Nexus server alerts are working', 'This is a test. Real alerts arrive when something on the VPS needs attention.', '<p>This is a test. Real alerts arrive when something on the VPS needs attention.</p>');
