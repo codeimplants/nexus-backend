@@ -89,7 +89,9 @@ export class ServerAlertsService implements OnModuleInit, OnModuleDestroy {
     async test() {
         const channels = this.channels.length ? this.channels : this.buildChannels();
         if (!channels.length) return { sent: false, reason: 'Set SMTP_URL and ALERT_EMAIL_TO in this environment\'s .env' };
-        await this.deliver(channels, 'Nexus server alerts are working', 'This is a test. Real alerts arrive when something on the VPS needs attention.', '<p>This is a test. Real alerts arrive when something on the VPS needs attention.</p>');
+        const errors = await this.deliver(channels, 'Nexus server alerts are working', 'This is a test. Real alerts arrive when something on the VPS needs attention.', '<p>This is a test. Real alerts arrive when something on the VPS needs attention.</p>');
+        // Report the provider's refusal, not "sent": a test that hides a bad password is worse than none.
+        if (errors.length) return { sent: false, reason: errors.join('; ') };
         return { sent: true, to: process.env.ALERT_EMAIL_TO };
     }
 
@@ -147,14 +149,19 @@ export class ServerAlertsService implements OnModuleInit, OnModuleDestroy {
         await this.save(state);
     }
 
+    /** Sends through every channel; returns the failures, one line each. */
     private async deliver(channels: AlertChannel[], subject: string, text: string, html: string) {
+        const errors: string[] = [];
         for (const c of channels) {
             try {
                 await c.send(subject, text, html);
             } catch (e) {
-                this.logger.error(`Alert via ${c.name} failed: ${(e as Error).message}`);
+                const msg = (e as Error).message.split(/\r?\n/)[0];
+                this.logger.error(`Alert via ${c.name} failed: ${msg}`);
+                errors.push(`${c.name}: ${msg}`);
             }
         }
+        return errors;
     }
 
     private async load(): Promise<Record<string, OpenAlert>> {
