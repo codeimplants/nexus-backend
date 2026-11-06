@@ -116,7 +116,7 @@ export const INVENTORY: InventoryApp[] = [
         // .NET 9, self-contained, under systemd (truepayroll-ingestion-{dev,prod}), not PM2.
         // One process serves both the API and the plain-HTTP device port (7300 prod / 7301 dev).
         id: 'truepayroll', name: 'TruePayroll', stack: '.NET 9 · ASP.NET Core (systemd)', account: 'sanskarpandit',
-        process: /\/truepayroll\/(dev|prod)\/publish\/TruePayroll\.Ingestion/, folders: ['truepayroll'],
+        process: /\/truepayroll\/(dev|prod)\/publish\/TruePayroll\.Ingestion/, folders: ['truepayroll', 'truepayroll-scripts'],
         databases: /^truepayroll_/, database: 'PostgreSQL 16 (shared; dev on the 5433 cluster)',
         critical: true,
         hosts: {
