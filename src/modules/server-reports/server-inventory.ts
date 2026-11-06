@@ -19,6 +19,11 @@ export interface InventoryApp {
     pm2?: RegExp;
     /** Docker container names. */
     docker?: RegExp;
+    /**
+     * Command lines of processes run by neither PM2 nor Docker, e.g. a systemd service.
+     * Matched only for processes whose command starts with /home/<account>/.
+     */
+    process?: RegExp;
     /** Folders under /home/<account>/ (names, or name prefixes ending in *). */
     folders: string[];
     /** Database names (Postgres or MongoDB). */
@@ -105,6 +110,18 @@ export const INVENTORY: InventoryApp[] = [
         hosts: {
             prod: ['api.feenix.codeimplants.com', 'feenix.codeimplants.com'],
             dev: ['dev.api.feenix.codeimplants.com', 'dev.feenix.codeimplants.com'],
+        },
+    },
+    {
+        // .NET 9, self-contained, under systemd (truepayroll-ingestion-{dev,prod}), not PM2.
+        // One process serves both the API and the plain-HTTP device port (7300 prod / 7301 dev).
+        id: 'truepayroll', name: 'TruePayroll', stack: '.NET 9 · ASP.NET Core (systemd)', account: 'sanskarpandit',
+        process: /\/truepayroll\/(dev|prod)\/publish\/TruePayroll\.Ingestion/, folders: ['truepayroll'],
+        databases: /^truepayroll_/, database: 'PostgreSQL 16 (shared; dev on the 5433 cluster)',
+        critical: true,
+        hosts: {
+            prod: ['api.truepayroll.codeimplants.com', 'truepayroll.codeimplants.com'],
+            dev: ['dev.api.truepayroll.codeimplants.com', 'dev.truepayroll.codeimplants.com'],
         },
     },
     {

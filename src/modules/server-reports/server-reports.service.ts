@@ -149,6 +149,17 @@ export class ServerReportsService {
                         restarts: 0, restarts24h: null as number | null, crashes24h: null as number | null, lastCrashAt: null as string | null,
                         uptimeSec: null as number | null, runtime: c.image,
                     })),
+                ...snap.processes
+                    .filter((p) => !claimed.has(p.pid) && p.cmd.startsWith(`/home/${app.account}/`) && app.process?.test(p.cmd))
+                    .map((p) => {
+                        const env = envOf(p.cmd.match(app.process!)?.[0] ?? p.cmd);
+                        return {
+                            name: `${app.id}-${env}`, kind: 'service' as const, env, port: null as string | null, status: 'online',
+                            memory: treeRss(p.pid), memLimit: null as number | null, cpu: p.cpu,
+                            restarts: 0, restarts24h: null as number | null, crashes24h: null as number | null, lastCrashAt: null as string | null,
+                            uptimeSec: p.ageSec, runtime: null as string | null,
+                        };
+                    }),
             ].sort((a, b) => b.memory - a.memory);
 
             const folders = Object.entries(snap.diskUsage)
