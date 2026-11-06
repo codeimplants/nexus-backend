@@ -130,12 +130,63 @@ def container_of(pid):
         return None
 
 
+PM2_STOP = re.compile(r'^(\S+): PM2 log: Stopping app:(.+?) id:\d+')
+PM2_EXIT = re.compile(r'^(\S+): PM2 log: App \[(.+?):\d+\] exited with code \[(\S*)\] via signal \[(\S*)\]')
+
+
+def pm2_crashes(user, hours=24):
+    """
+    Crash restarts per app from that account's ~/.pm2/pm2.log, as {name: [ISO times]}.
+
+    PM2's restart_time counts deploys too, so a busy day of deploys looked like a
+    crash loop. A deploy (pm2 restart/reload/stop) logs "Stopping app" just before
+    the exit; a crash exits without one. Only those exits are counted.
+    Returns None if the log cannot be read, so the dashboard can say it does not know.
+    """
+    logs = sorted(
+        (p for p in (os.path.join(f'/home/{user}/.pm2', f) for f in safe_listdir(f'/home/{user}/.pm2'))
+         if os.path.basename(p).startswith('pm2') and p.endswith('.log')),
+        key=os.path.getmtime,
+    )[-2:]  # the live log and the one rotated before it
+    if not logs:
+        return None
+    since = datetime.now() - timedelta(hours=hours)  # pm2.log uses the server's local time
+    stopping, crashes = set(), {}
+    try:
+        for path in logs:
+            with open(path, 'rb') as fh:
+                fh.seek(max(os.path.getsize(path) - 4_000_000, 0))
+                lines = fh.read().decode('utf-8', 'replace').splitlines()
+            for line in lines:
+                m = PM2_STOP.match(line)
+                if m:
+                    stopping.add(m.group(2))
+                    continue
+                m = PM2_EXIT.match(line)
+                if not m:
+                    continue
+                at, name = m.group(1), m.group(2)
+                if name in stopping:
+                    stopping.discard(name)
+                    continue
+                try:
+                    t = datetime.fromisoformat(at)
+                except ValueError:
+                    continue
+                if t >= since:
+                    crashes.setdefault(name, []).append(t.isoformat())
+    except OSError:
+        return None
+    return crashes
+
+
 def pm2_lists():
     """Every account's PM2, read as that account (each has its own daemon)."""
     result = []
     for user in sorted(os.listdir('/home')):
         if not os.path.isdir(f'/home/{user}/.pm2'):
             continue
+        crashes = pm2_crashes(user)
         out = run(['runuser', '-l', user, '-c', 'pm2 jlist'], timeout=30)
         try:
             items = json.loads(out[out.index('['):]) if '[' in out else []
@@ -152,6 +203,8 @@ def pm2_lists():
                 'status': env.get('status'),
                 'restarts': env.get('restart_time', 0),
                 'unstableRestarts': env.get('unstable_restarts', 0),
+                # Crash restarts only (not deploys) in the last 24 hours; None when pm2.log is unreadable.
+                'crashes24h': None if crashes is None else crashes.get(p.get('name'), []),
                 'startedAt': env.get('pm_uptime'),
                 'memory': p.get('monit', {}).get('memory', 0),
                 'cpu': p.get('monit', {}).get('cpu', 0),

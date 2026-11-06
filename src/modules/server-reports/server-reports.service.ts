@@ -31,7 +31,7 @@ interface Snapshot {
         hostname: string; os: string; cpus: number; uptimeSec: number; load: number[]; cpuPercent: number;
         memTotal: number; memAvailable: number; swapTotal: number; swapFree: number; diskTotal: number; diskFree: number;
     };
-    pm2: Array<{ account: string; name: string; pid: number; status: string; restarts: number; unstableRestarts: number; startedAt: number; memory: number; cpu: number; port: string; interpreter?: string; nodeVersion?: string }>;
+    pm2: Array<{ account: string; name: string; pid: number; status: string; restarts: number; unstableRestarts: number; crashes24h?: string[] | null; startedAt: number; memory: number; cpu: number; port: string; interpreter?: string; nodeVersion?: string }>;
     docker: Array<{ id?: string; name: string; image: string; state: string; status: string; ports: string; cpu: number; memory: number; memLimit: number }>;
     dockerImagesBytes: number;
     processes: Array<{ pid: number; ppid: number; user: string; rss: number; cpu: number; ageSec: number; cmd: string; container?: string | null }>;
@@ -133,6 +133,9 @@ export class ServerReportsService {
                         return {
                             name: p.name, kind: 'pm2' as const, env: envOf(p.name), port: p.port || null, status: p.status,
                             restarts24h: restartsSince(history, `${p.account}/${p.name}`, p.restarts, Date.now() - 24 * 3600_000),
+                            // Crash restarts only, from pm2.log; null when the collector could not tell (old collector).
+                            crashes24h: p.crashes24h ? p.crashes24h.length : null,
+                            lastCrashAt: p.crashes24h?.length ? p.crashes24h[p.crashes24h.length - 1] : null,
                             memory: Math.max(tree, p.memory), memLimit: null as number | null, cpu: p.cpu, restarts: p.restarts,
                             uptimeSec: p.startedAt && p.status === 'online' ? Math.round((Date.now() - p.startedAt) / 1000) : 0,
                             runtime: p.nodeVersion ? `Node ${p.nodeVersion}` : p.interpreter ?? null,
@@ -143,7 +146,8 @@ export class ServerReportsService {
                     .map((c) => ({
                         name: c.name, kind: 'docker' as const, env: envOf(c.name), port: c.ports.match(/:(\d+)->/)?.[1] ?? null,
                         status: c.state === 'running' ? 'online' : c.state, memory: c.memory, memLimit: c.memLimit || null, cpu: c.cpu,
-                        restarts: 0, restarts24h: null as number | null, uptimeSec: null as number | null, runtime: c.image,
+                        restarts: 0, restarts24h: null as number | null, crashes24h: null as number | null, lastCrashAt: null as string | null,
+                        uptimeSec: null as number | null, runtime: c.image,
                     })),
             ].sort((a, b) => b.memory - a.memory);
 
@@ -347,7 +351,17 @@ export class ServerReportsService {
 
             // Restart loops.
             for (const e of a.envs) {
-                // PM2's restart count never resets and includes deploys, so only recent restarts mean anything.
+                // Crashes, not restarts: PM2's restart count includes every deploy, so a busy day of
+                // deploys looked like a crash loop (5 Nov 2026). The collector tells them apart from pm2.log.
+                if (e.crashes24h !== null) {
+                    const recent = e.lastCrashAt !== null && Date.now() - Date.parse(e.lastCrashAt) < 10 * 60_000;
+                    if (e.crashes24h >= 3)
+                        f({ level: up(e.env === 'prod' ? 'warning' : 'info', a.critical && e.env === 'prod'), title: `${e.name} crashed ${e.crashes24h} times in 24 hours.`, why: 'PM2 brought it back each time, not counting deploys. Its error log will say why.' });
+                    else if (recent)
+                        f({ level: 'warning', title: `${e.name} crashed in the last 10 minutes.`, why: 'PM2 restarted it. Watch whether it settles; its error log will say why.' });
+                    continue;
+                }
+                // Fallback for a collector that predates crash counting: restarts, which include deploys.
                 if (e.restarts24h !== null && e.restarts24h >= 5)
                     f({ level: up(e.env === 'prod' ? 'warning' : 'info', a.critical && e.env === 'prod'), title: `${e.name} restarted ${e.restarts24h} times in 24 hours.`, why: 'More than deploys explain. Usually a crash that PM2 keeps bringing back; its error log will say why.' });
                 else if (e.uptimeSec !== null && e.uptimeSec < 600 && e.restarts > 3)
