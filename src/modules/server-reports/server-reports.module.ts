@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { PrismaService } from '../../database/prisma.service';
 import { AuthModule } from '../auth/auth.module';
 import { PushModule } from '../push/push.module';
 import { PaymentsReportsModule } from '../payments-reports/payments-reports.module';
@@ -13,6 +12,6 @@ import { ServerAlertsService } from './server-alerts.service';
 @Module({
     imports: [AuthModule, PushModule, PaymentsReportsModule, MessagingReportsModule],
     controllers: [ServerReportsController],
-    providers: [ServerReportsService, ServerAlertsService, AppAlerts, PrismaService, RolesGuard],
+    providers: [ServerReportsService, ServerAlertsService, AppAlerts, RolesGuard],
 })
 export class ServerReportsModule { }

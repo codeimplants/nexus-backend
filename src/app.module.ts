@@ -12,10 +12,12 @@ import { MessagingReportsModule } from './modules/messaging-reports/messaging-re
 import { PaymentsReportsModule } from './modules/payments-reports/payments-reports.module';
 import { ServerReportsModule } from './modules/server-reports/server-reports.module';
 import { PushModule } from './modules/push/push.module';
-import { PrismaService } from './database/prisma.service';
+import { DatabaseModule } from './database/database.module';
 
 @Module({
     imports: [
+        // The single PrismaService (one connection pool per process); see database.module.ts.
+        DatabaseModule,
         AuthModule,
         AppsModule,
         RulesModule,
@@ -39,6 +41,5 @@ import { PrismaService } from './database/prisma.service';
         // Phones running the Nexus admin app, and push alerts to them through Expo.
         PushModule,
     ],
-    providers: [PrismaService],
 })
 export class AppModule { }

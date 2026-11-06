@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AppAdminController } from './app-admin.controller';
 import { AppAdminService } from './app-admin.service';
-import { PrismaService } from '../../database/prisma.service';
 import { AuthModule } from '../auth/auth.module';
 
 @Module({
@@ -10,7 +9,7 @@ import { AuthModule } from '../auth/auth.module';
     // resolve it and the whole application fails to boot.
     imports: [AuthModule],
     controllers: [AppAdminController],
-    providers: [AppAdminService, PrismaService],
+    providers: [AppAdminService],
     // AnalyticsModule uses this to resolve pseudonymous ids to real contacts.
     exports: [AppAdminService],
 })
