@@ -97,6 +97,17 @@ export const INVENTORY: InventoryApp[] = [
         },
     },
     {
+        // Laravel on FrankenPHP's static binary (no system PHP): API, queue worker, scheduler, Reverb.
+        // /health touches the database and the worker heartbeat, so a pass here means sign-in works.
+        id: 'feenix', name: 'Feenix', stack: 'PHP · Laravel (FrankenPHP) · API + worker + Reverb', account: 'sanskarpandit',
+        pm2: /^feenix-/, folders: ['feenix'], databases: /^feenix_/, database: 'PostgreSQL 16 (shared)',
+        critical: true,
+        hosts: {
+            prod: ['api.feenix.codeimplants.com', 'feenix.codeimplants.com'],
+            dev: ['dev.api.feenix.codeimplants.com', 'dev.feenix.codeimplants.com'],
+        },
+    },
+    {
         id: 'restobill', name: 'RestoBill', stack: 'Java 21 (Spring) · Docker', account: 'sanskarpandit',
         docker: /^restobill-/, folders: ['restobill'], databases: /^restobill/, database: 'Postgres 16 + Redis (own containers)',
         // Spring's /actuator/health is deliberately not proxied by nginx (restobill-backend deploy/README.md).
