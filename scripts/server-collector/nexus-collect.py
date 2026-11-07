@@ -169,6 +169,11 @@ def pm2_crashes(user, hours=24):
                 if name in stopping:
                     stopping.discard(name)
                     continue
+                # Exit code 0 is a planned exit, not a crash: Laravel's `queue:work --max-time`
+                # and similar workers end themselves on purpose so PM2 starts them fresh. Counting
+                # those raised "feenix-worker-prod crashed 27 times" for hourly recycling (7 Nov 2026).
+                if m.group(3) == '0':
+                    continue
                 try:
                     t = datetime.fromisoformat(at)
                 except ValueError:

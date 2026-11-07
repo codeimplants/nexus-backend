@@ -45,7 +45,6 @@ export const INVENTORY: InventoryApp[] = [
         pm2: /^sonebill-backend-/, folders: ['sonebill-backend-*'], databases: /sonebill/i, database: 'MongoDB',
         hosts: {
             prod: ['api.sonebill.codeimplants.com', 'api-sonebill.codeimplants.com'],
-            preprod: ['preprod.api.sonebill.codeimplants.com'],
             dev: ['dev.api.sonebill.codeimplants.com'],
         },
     },
@@ -54,7 +53,6 @@ export const INVENTORY: InventoryApp[] = [
         pm2: /^sonetaran-/, folders: ['sonetaran'], databases: /sonetaran/i, database: 'MongoDB',
         hosts: {
             prod: ['api.sonetaran.codeimplants.com'],
-            preprod: ['preprod-api.sonetaran.codeimplants.com'],
             dev: ['dev-api.sonetaran.codeimplants.com'],
         },
     },
@@ -64,7 +62,6 @@ export const INVENTORY: InventoryApp[] = [
         critical: true,
         hosts: {
             prod: ['api.nexus.codeimplants.com', 'api-version-control.codeimplants.com', 'api.version.control.codeimplants.com', 'nexus.codeimplants.com'],
-            preprod: ['preprod.api.nexus.codeimplants.com'],
             dev: ['dev.api.nexus.codeimplants.com'],
         },
     },
@@ -136,7 +133,6 @@ export const INVENTORY: InventoryApp[] = [
         docker: /^barnefarms-/, folders: ['barnefarms'], databases: /barne/i, database: 'MongoDB',
         hosts: {
             prod: ['api.barnefarms.com', 'barnefarms.com', 'www.barnefarms.com'],
-            preprod: ['api-preprod.barnefarms.com', 'preprod.barnefarms.com', 'www.preprod.barnefarms.com'],
             dev: ['api.dev.barnefarms.com', 'dev.barnefarms.com'],
         },
     },
