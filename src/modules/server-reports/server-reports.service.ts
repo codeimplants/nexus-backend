@@ -46,6 +46,8 @@ interface Snapshot {
 interface HostDay {
     requests: number; status: Record<'2xx' | '3xx' | '4xx' | '5xx' | 'other', number>;
     bytes: number; latencySumMs: number; latency: number[]; hours: number[]; ips: string[];
+    /** Absent on days collected before bots and own traffic were split out. */
+    bots?: number; own?: number; realIps?: string[]; botIps?: string[];
 }
 export interface R2Usage { checkedAt: string; bytes: number; objects: number; limitBytes: number; paused: boolean; error?: string }
 interface TrafficDay { day: string; hosts: Record<string, HostDay> }
@@ -59,9 +61,13 @@ export interface Flag { level: Level; title: string; why: string; appId?: string
 export interface TrafficCounts {
     requests: number; visitors: number; errors4xx: number; errors5xx: number;
     avgMs: number | null; p95Ms: number | null; bytes: number;
+    /** requests = real + bots + own. visitors = distinct real IPs (no bots, no own IPs). */
+    real: number; bots: number; own: number;
+    /** Every distinct IP, bots and own included (what `visitors` used to be). */
+    allIps: number;
 }
 
-const ZERO_TRAFFIC: TrafficCounts = { requests: 0, visitors: 0, errors4xx: 0, errors5xx: 0, avgMs: null, p95Ms: null, bytes: 0 };
+const ZERO_TRAFFIC: TrafficCounts = { requests: 0, visitors: 0, errors4xx: 0, errors5xx: 0, avgMs: null, p95Ms: null, bytes: 0, real: 0, bots: 0, own: 0, allIps: 0 };
 
 /** The IST day `offset` days from today, as YYYY-MM-DD. */
 const istDay = (offset = 0) => new Date(Date.now() + IST_OFFSET_MS + offset * 86_400_000).toISOString().slice(0, 10);
@@ -200,7 +206,7 @@ export class ServerReportsService {
                     yesterday: sumHosts(yesterday, prodHosts),
                     yesterdayAllEnvs: sumHosts(yesterday, allHosts),
                     /** Prod requests per day over the 7 days before yesterday, for the spike/drop check. */
-                    weekAvg: Math.round(week.reduce((n, d) => n + sumHosts(d, prodHosts).requests, 0) / Math.max(week.filter(Boolean).length, 1)),
+                    weekAvg: Math.round(week.reduce((n, d) => n + sumHosts(d, prodHosts).real, 0) / Math.max(week.filter(Boolean).length, 1)),
                     weekDays: week.filter(Boolean).length,
                     hoursToday: hoursOf(today, prodHosts),
                 },
@@ -398,9 +404,9 @@ export class ServerReportsService {
             if (y.requests >= 50 && y.errors5xx / y.requests > 0.02)
                 f({ level: up('warning', a.critical), title: `${pct(y.errors5xx, y.requests)}% server errors yesterday.`, why: `${y.errors5xx} of ${y.requests} prod requests failed with 5xx.` });
             if (a.traffic.weekDays >= 3 && a.traffic.weekAvg >= 100) {
-                const ratio = y.requests / a.traffic.weekAvg;
-                if (ratio >= 3) f({ level: 'info', title: `Traffic spike: ${ratio.toFixed(1)}× normal.`, why: `${y.requests} requests yesterday against a ${a.traffic.weekAvg}/day average. A launch, a campaign, or a bot.` });
-                if (ratio <= 0.3) f({ level: 'warning', title: `Traffic dropped to ${Math.round(ratio * 100)}% of normal.`, why: `${y.requests} requests yesterday against a ${a.traffic.weekAvg}/day average. Apps may be failing to reach it.` });
+                const ratio = y.real / a.traffic.weekAvg;
+                if (ratio >= 3) f({ level: 'info', title: `Traffic spike: ${ratio.toFixed(1)}× normal.`, why: `${y.real} real requests yesterday against a ${a.traffic.weekAvg}/day average. A launch, a campaign, or a bot.` });
+                if (ratio <= 0.3) f({ level: 'warning', title: `Traffic dropped to ${Math.round(ratio * 100)}% of normal.`, why: `${y.real} real requests yesterday against a ${a.traffic.weekAvg}/day average. Apps may be failing to reach it.` });
             }
             if (y.p95Ms !== null && y.requests >= 50 && y.p95Ms >= 1000)
                 f({ level: 'info', title: `Slow for some users: 95% of requests under ${y.p95Ms} ms.`, why: 'One request in twenty took longer than that yesterday.' });
@@ -553,10 +559,24 @@ function sumHosts(day: TrafficDay | null, hosts?: string[]): TrafficCounts {
         if (seen >= timed * 0.95) { p95 = LAT_EDGES[i] ?? LAT_EDGES[LAT_EDGES.length - 1] * 2; break; }
     }
     const ips = new Set<string>();
-    for (const d of entries) for (const ip of d.ips) ips.add(ip);
+    const real = new Set<string>();
+    const botIps = new Set<string>();
+    for (const d of entries) {
+        for (const ip of d.ips) ips.add(ip);
+        for (const ip of d.realIps ?? d.ips) real.add(ip);
+        for (const ip of d.botIps ?? []) botIps.add(ip);
+    }
+    // An IP that probed for holes is a bot all day, even for its normal-looking requests.
+    for (const ip of botIps) real.delete(ip);
+    const bots = entries.reduce((n, d) => n + (d.bots ?? 0), 0);
+    const own = entries.reduce((n, d) => n + (d.own ?? 0), 0);
     return {
         requests,
-        visitors: ips.size,
+        real: requests - bots - own,
+        bots,
+        own,
+        allIps: ips.size,
+        visitors: real.size,
         errors4xx: entries.reduce((n, d) => n + d.status['4xx'], 0),
         errors5xx: entries.reduce((n, d) => n + d.status['5xx'], 0),
         avgMs: timed ? Math.round(entries.reduce((n, d) => n + d.latencySumMs, 0) / timed) : null,

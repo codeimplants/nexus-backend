@@ -17,6 +17,7 @@ Traffic comes from /var/log/nginx/traffic.log, a log install.sh adds that
 records the site name for every request (the stock access.log does not).
 """
 import grp
+import ipaddress
 import json
 import os
 import re
@@ -32,6 +33,19 @@ DU_EVERY = 30 * 60          # disk use per folder is slow; refresh every 30 minu
 DB_EVERY = 10 * 60
 HISTORY_EVERY = 10 * 60
 TRAFFIC_KEEP_DAYS = 400
+# Your own IPs (home, office, phone hotspot): one IP or CIDR per line, # for comments.
+# Their requests are counted as 'own', not as real users. Re-read every run.
+OWN_IPS_FILE = os.environ.get('NEXUS_OWN_IPS', '/etc/nexus-server/own-ips')
+# Crawlers, uptime checkers, scanners and scripts. Deliberately not okhttp/Dalvik/CFNetwork:
+# those are our own React Native apps.
+BOT_UA = re.compile(r'bot|crawl|spider|slurp|scan|curl|wget|python|go-http|java/|libwww|httpclient|'
+                    r'axios|node-fetch|undici|headless|phantom|zgrab|masscan|nmap|nuclei|censys|'
+                    r'shodan|expanse|facebookexternalhit|whatsapp|preview|monitor|uptime|pingdom|'
+                    r'letsencrypt|certbot', re.I)
+# Paths no app of ours serves: whoever asks for them is probing for holes.
+SCAN_PATH = re.compile(r'/\.(env|git|aws|ssh|htaccess|vscode|DS_Store)|wp-|wordpress|xmlrpc|phpmyadmin|'
+                       r'/cgi-bin|/boaform|/vendor/phpunit|/actuator|/solr|/owa/|/autodiscover|'
+                       r'\.(asp|aspx|jsp|cgi|sql|bak|zip|tar|gz)(\?|$)|/setup\.php|/shell|/HNAP1', re.I)
 HISTORY_KEEP_DAYS = 90
 # Latency buckets in ms, for an approximate p95 without keeping every value.
 LAT_EDGES = [10, 25, 50, 100, 200, 300, 500, 1000, 2000, 5000, 10000]
@@ -415,7 +429,48 @@ def lat_bucket(ms):
 
 def new_host():
     return {'requests': 0, 'status': {'2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0, 'other': 0},
-            'bytes': 0, 'latencySumMs': 0, 'latency': [0] * (len(LAT_EDGES) + 1), 'hours': [0] * 24, 'ips': []}
+            'bytes': 0, 'latencySumMs': 0, 'latency': [0] * (len(LAT_EDGES) + 1), 'hours': [0] * 24, 'ips': [],
+            # Split of `requests` (lines logged before the user agent was recorded count as real):
+            'bots': 0, 'own': 0, 'realIps': [], 'botIps': []}
+
+
+def own_networks():
+    nets = [ipaddress.ip_network('127.0.0.0/8'), ipaddress.ip_network('::1/128')]
+    # The server's own addresses: Nexus health checks and app-to-app calls go out
+    # through the public domain and come back in from these.
+    for a in run(['hostname', '-I'], partial=True).split():
+        try:
+            nets.append(ipaddress.ip_network(a))
+        except ValueError:
+            pass
+    try:
+        for line in open(OWN_IPS_FILE, encoding='utf-8'):
+            line = line.split('#', 1)[0].strip()
+            if line:
+                try:
+                    nets.append(ipaddress.ip_network(line, strict=False))
+                except ValueError:
+                    print(f'own-ips: ignoring {line!r}', file=sys.stderr)
+    except FileNotFoundError:
+        pass
+    return nets
+
+
+def is_own(ip, nets, cache):
+    if ip not in cache:
+        try:
+            a = ipaddress.ip_address(ip)
+            cache[ip] = any(a.version == n.version and a in n for n in nets)
+        except ValueError:
+            cache[ip] = False
+    return cache[ip]
+
+
+def add_ip(ip_sets, h, day, host, field, ip):
+    key = (day, host, field)
+    if key not in ip_sets:
+        ip_sets[key] = set(h[field])
+    ip_sets[key].add(ip)
 
 
 def read_traffic(state):
@@ -442,6 +497,8 @@ def read_traffic(state):
 
     days = {}
     ip_sets = {}
+    nets = own_networks()
+    own_cache = {}
     end = offset
     for path, start in chunks:
         with open(path, 'rb') as f:
@@ -455,6 +512,8 @@ def read_traffic(state):
                 if len(cols) < 6:
                     continue
                 ts, host, status, rt, ip, sent = cols[:6]
+                ua = cols[6] if len(cols) > 6 else None   # None: logged before the format had it
+                uri = cols[7] if len(cols) > 7 else ''
                 try:
                     t = datetime.fromisoformat(ts).astimezone(IST)
                 except ValueError:
@@ -465,6 +524,8 @@ def read_traffic(state):
                 hosts = days[day]['hosts']
                 host = host.lower()[:120] or '-'
                 h = hosts.get(host) or new_host()
+                for k, v in new_host().items():
+                    h.setdefault(k, v)   # day files written before the split existed
                 hosts[host] = h
                 h['requests'] += 1
                 cls = status[:1] + 'xx' if status[:1] in '2345' and len(status) == 3 else 'other'
@@ -480,12 +541,19 @@ def read_traffic(state):
                     h['latency'][lat_bucket(ms)] += 1
                 h['hours'][t.hour] += 1
                 h['bytes'] += int(sent) if sent.isdigit() else 0
-                key = (day, host)
-                if key not in ip_sets:
-                    ip_sets[key] = set(h['ips'])
-                ip_sets[key].add(ip)
-    for (day, host), ips in ip_sets.items():
-        days[day]['hosts'][host]['ips'] = sorted(ips)
+                if is_own(ip, nets, own_cache):
+                    kind = 'own'
+                elif ua is not None and (ua in ('', '-') or BOT_UA.search(ua) or SCAN_PATH.search(uri)):
+                    kind = 'bots'
+                    add_ip(ip_sets, h, day, host, 'botIps', ip)
+                else:
+                    kind = 'real'
+                    add_ip(ip_sets, h, day, host, 'realIps', ip)
+                if kind != 'real':
+                    h[kind] += 1
+                add_ip(ip_sets, h, day, host, 'ips', ip)
+    for (day, host, field), ips in ip_sets.items():
+        days[day]['hosts'][host][field] = sorted(ips)
     for day, data in days.items():
         data['updatedAt'] = datetime.now(timezone.utc).isoformat()
         write_json(f'{OUT}/traffic/{day}.json', data, private=True)

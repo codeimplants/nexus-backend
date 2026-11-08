@@ -31,9 +31,20 @@ cat > "$CONF" <<'NGINX'
 # Added by nexus-backend/scripts/server-collector/install.sh for the Nexus Server tab.
 # One tab-separated line per request with the site name ($host), so traffic can
 # be counted per app. Read by /usr/local/lib/nexus-server/nexus-collect.py.
-log_format nexus_traffic '$time_iso8601\t$host\t$status\t$request_time\t$remote_addr\t$body_bytes_sent';
+# The user agent and path let it tell bots and scanners from real users.
+log_format nexus_traffic '$time_iso8601\t$host\t$status\t$request_time\t$remote_addr\t$body_bytes_sent\t$http_user_agent\t$uri';
 access_log /var/log/nginx/traffic.log nexus_traffic;
 NGINX
+# Your own IPs, so your testing is not counted as users. Never overwritten.
+install -d -m 755 /etc/nexus-server
+if [[ ! -e /etc/nexus-server/own-ips ]]; then
+  cat > /etc/nexus-server/own-ips <<'OWN'
+# Requests from these IPs show as "own" in Nexus, not as real users.
+# One IP or CIDR per line. Find yours with: curl -s https://api.ipify.org
+# The server's own addresses and localhost are always counted as own.
+OWN
+  chmod 644 /etc/nexus-server/own-ips
+fi
 if ! grep -qE '^\s*include\s+/etc/nginx/conf\.d/\*\.conf' /etc/nginx/nginx.conf; then
   echo "   nginx.conf does not include conf.d/*.conf; add the two lines in $CONF to its http block by hand." >&2
 fi
