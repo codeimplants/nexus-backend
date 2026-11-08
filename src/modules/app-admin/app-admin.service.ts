@@ -350,7 +350,10 @@ export class AppAdminService {
                 ? (payload as any).data
                 : Array.isArray((payload as any)?.users)
                     ? (payload as any).users
-                    : [];
+                    // Paginated list in the usual envelope (Panchal Sonar: { data: { items } })
+                    : Array.isArray((payload as any)?.data?.items)
+                        ? (payload as any).data.items
+                        : [];
 
         for (const row of rows as Record<string, any>[]) {
             const id = row?._id ?? row?.id ?? row?.userId;
