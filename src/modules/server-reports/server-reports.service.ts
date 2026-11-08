@@ -544,11 +544,13 @@ function sumHosts(day: TrafficDay | null, hosts?: string[]): TrafficCounts {
     const requests = entries.reduce((n, d) => n + d.requests, 0);
     const lat = LAT_EDGES.map((_, i) => entries.reduce((n, d) => n + (d.latency[i] ?? 0), 0));
     lat.push(entries.reduce((n, d) => n + (d.latency[LAT_EDGES.length] ?? 0), 0));
+    // Timed requests only: WebSocket upgrades are counted as requests but not timed.
+    const timed = lat.reduce((n, c) => n + c, 0);
     let seen = 0;
     let p95: number | null = null;
     for (let i = 0; i < lat.length; i++) {
         seen += lat[i];
-        if (seen >= requests * 0.95) { p95 = LAT_EDGES[i] ?? LAT_EDGES[LAT_EDGES.length - 1] * 2; break; }
+        if (seen >= timed * 0.95) { p95 = LAT_EDGES[i] ?? LAT_EDGES[LAT_EDGES.length - 1] * 2; break; }
     }
     const ips = new Set<string>();
     for (const d of entries) for (const ip of d.ips) ips.add(ip);
@@ -557,8 +559,8 @@ function sumHosts(day: TrafficDay | null, hosts?: string[]): TrafficCounts {
         visitors: ips.size,
         errors4xx: entries.reduce((n, d) => n + d.status['4xx'], 0),
         errors5xx: entries.reduce((n, d) => n + d.status['5xx'], 0),
-        avgMs: requests ? Math.round(entries.reduce((n, d) => n + d.latencySumMs, 0) / requests) : null,
-        p95Ms: requests ? p95 : null,
+        avgMs: timed ? Math.round(entries.reduce((n, d) => n + d.latencySumMs, 0) / timed) : null,
+        p95Ms: timed ? p95 : null,
         bytes: entries.reduce((n, d) => n + d.bytes, 0),
     };
 }

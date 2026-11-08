@@ -473,8 +473,11 @@ def read_traffic(state):
                     ms = float(rt) * 1000
                 except ValueError:
                     ms = 0
-                h['latencySumMs'] += round(ms)
-                h['latency'][lat_bucket(ms)] += 1
+                # 101 = a WebSocket upgrade; nginx's time is how long the socket stayed open
+                # (minutes), not a response time. Timing them made Sonebill look 10 s slow.
+                if status != '101':
+                    h['latencySumMs'] += round(ms)
+                    h['latency'][lat_bucket(ms)] += 1
                 h['hours'][t.hour] += 1
                 h['bytes'] += int(sent) if sent.isdigit() else 0
                 key = (day, host)
