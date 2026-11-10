@@ -1,6 +1,7 @@
 import {
     BadGatewayException,
     BadRequestException,
+    ConflictException,
     Injectable,
     Logger,
     NotFoundException,
@@ -49,6 +50,8 @@ interface PayApp {
     slug: string;
     name: string;
     status: 'active' | 'suspended';
+    /** The gateway this app's new payments go through. */
+    defaultProvider: string;
     createdAt: string;
 }
 
@@ -122,10 +125,11 @@ export class PaymentsReportsService {
         const granularity = range.days <= MAX_DAILY_BARS ? 'day' : 'month';
         const qs = instants(range);
 
-        const [apps, byApp, byBucket] = await Promise.all([
+        const [apps, byApp, byBucket, providers] = await Promise.all([
             this.get<{ data: PayApp[] }>('/apps', actorId),
             this.get<PaySummary>(`/summary?${qs}&groupBy=app`, actorId),
             this.get<PaySummary>(`/summary?${qs}&groupBy=app,${granularity}`, actorId),
+            this.get<{ data: Array<{ code: string }> }>('/providers', actorId),
         ]);
 
         const statsBySlug = new Map(byApp.rows.map((r) => [r.groups.app, r]));
@@ -138,11 +142,12 @@ export class PaymentsReportsService {
                     slug: a.slug,
                     name: a.name,
                     active: a.status === 'active',
+                    gateway: a.defaultProvider,
                     // The order apps joined in: the dashboard colours an app by it, so a colour stays with its app.
                     createdAt: a.createdAt,
                     ...toCounts(stats),
                     payers: stats?.payers ?? 0,
-                    // Payments started in the range that failed: declined, or rejected by PhonePe.
+                    // Payments started in the range that failed: declined, or rejected by the gateway.
                     failed: stats?.intentsFailed ?? 0,
                 };
             })
@@ -173,6 +178,8 @@ export class PaymentsReportsService {
                 appsWithPayments: appRows.filter((a) => a.payments > 0).length,
             },
             apps: appRows,
+            /** Gateways switched on in payments, i.e. what an app's gateway can be changed to. */
+            gateways: providers.data.map((p) => p.code),
             series: [...series.values()],
         };
     }
@@ -209,9 +216,30 @@ export class PaymentsReportsService {
         };
     }
 
+    /**
+     * Switches the gateway (phonepe / razorpay) an app's new payments go through. Payments that already
+     * started, and their refunds, stay on the gateway they used. Payments audits it under this admin.
+     */
+    async setGateway(slug: string, gateway: string, actorId: string) {
+        if (!SLUG.test(slug)) throw new BadRequestException('Unknown app');
+        if (typeof gateway !== 'string' || !/^[a-z]{2,20}$/.test(gateway)) throw new BadRequestException('Unknown gateway');
+        const app = await this.request<{ slug: string; name: string; defaultProvider: string }>(
+            'POST',
+            `/apps/${encodeURIComponent(slug)}/provider`,
+            actorId,
+            { provider: gateway },
+        );
+        this.logger.log(`Admin ${actorId} switched ${app.slug} to ${app.defaultProvider}`);
+        return { slug: app.slug, name: app.name, gateway: app.defaultProvider };
+    }
+
     // ---------------------------------------------------------------------
 
-    private async get<T>(path: string, actorId: string): Promise<T> {
+    private get<T>(path: string, actorId: string): Promise<T> {
+        return this.request<T>('GET', path, actorId);
+    }
+
+    private async request<T>(method: 'GET' | 'POST', path: string, actorId: string, body?: unknown): Promise<T> {
         const base = process.env.PAYMENTS_ADMIN_URL?.trim().replace(/\/+$/, '');
         const key = process.env.PAYMENTS_OPS_KEY?.trim();
         if (!base || !key) {
@@ -223,11 +251,14 @@ export class PaymentsReportsService {
         let res: Response;
         try {
             res = await fetch(`${base}/admin/v1${path}`, {
+                method,
                 headers: {
                     Authorization: `Bearer ${key}`,
                     'X-Actor': `nexus-admin:${actorId}`,
                     Accept: 'application/json',
+                    ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
                 },
+                body: body === undefined ? undefined : JSON.stringify(body),
                 signal: AbortSignal.timeout(15_000),
             });
         } catch (error) {
@@ -235,16 +266,20 @@ export class PaymentsReportsService {
             throw new BadGatewayException('Payments is not reachable right now');
         }
 
-        const body: unknown = await res.json().catch(() => null);
+        const payload: unknown = await res.json().catch(() => null);
         if (!res.ok) {
             // Payments' errors are { error: { type, code, message, requestId } }.
-            const error = (body as { error?: { message?: unknown } } | null)?.error;
+            const error = (payload as { error?: { message?: unknown } } | null)?.error;
             const message = typeof error?.message === 'string' ? error.message : `HTTP ${res.status}`;
             this.logger.error(`Payments admin API ${path.split('?')[0]} answered ${res.status}: ${message}`);
             if (res.status === 400) throw new BadRequestException(message);
             if (res.status === 404) throw new NotFoundException(message);
-            throw new BadGatewayException('Payments could not produce the report');
+            // 409: the gateway is not switched on in payments.
+            if (res.status === 409) throw new ConflictException(message);
+            // 403: the ops key predates admin:write; re-run payments' connect-nexus.sh.
+            if (res.status === 403) throw new ServiceUnavailableException('Nexus may not change payments yet: re-run connect-nexus.sh on the server');
+            throw new BadGatewayException(method === 'GET' ? 'Payments could not produce the report' : 'Payments could not make the change');
         }
-        return body as T;
+        return payload as T;
     }
 }

@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -37,5 +37,12 @@ export class PaymentsReportsController {
         @User() user: { id: string },
     ) {
         return this.reports.appCustomers(slug, { from, to, limit }, user.id);
+    }
+
+    /** Switches the gateway an app's new payments go through: body { gateway: 'phonepe' | 'razorpay' }. */
+    @Post('apps/:slug/gateway')
+    @HttpCode(200)
+    setGateway(@Param('slug') slug: string, @Body() body: { gateway?: string }, @User() user: { id: string }) {
+        return this.reports.setGateway(slug, body?.gateway ?? '', user.id);
     }
 }
