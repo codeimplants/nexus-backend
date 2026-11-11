@@ -67,6 +67,8 @@ interface MessagingAppUsers {
         endUserId: string;
         appUserId: string | null;
         phoneLast4: string;
+        /** Full E.164 number; absent from a messaging build older than this field. */
+        phone?: string;
         messages: number;
         segments: number;
         suppressed: number;
@@ -179,7 +181,7 @@ export class MessagingReportsService {
         };
     }
 
-    /** One app's people, most codes first. Phones are only ever the last four digits. */
+    /** One app's people, most codes first, with full phone numbers so admins can call or WhatsApp them. */
     async appUsers(slug: string, input: { from?: string; to?: string; limit?: string }, actorId: string) {
         if (!SLUG.test(slug)) throw new BadRequestException('Unknown app');
         const range = istRange(input, RANGE_LIMIT);
@@ -195,6 +197,7 @@ export class MessagingReportsService {
                 // Messaging's opaque id for the person, stable across ranges.
                 id: u.endUserId,
                 phoneLast4: u.phoneLast4,
+                phone: u.phone ?? null,
                 appUserId: u.appUserId,
                 codes: u.messages,
                 smsSegments: u.segments,

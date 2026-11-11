@@ -9,7 +9,7 @@ import { MessagingReportsService } from './messaging-reports.service';
  * The dashboard's Messages tab (All apps → Messages → OTP Usage Summary).
  *
  * ADMIN only: it spans every app, including ones a COLLABORATOR or LEAD_GEN is
- * not assigned to, and lists people by the last four digits of their phone.
+ * not assigned to, and lists people by their full phone number.
  */
 @Controller('admin/messaging')
 @UseGuards(JwtGuard, RolesGuard)
