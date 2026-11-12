@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { User } from '../../common/decorators/user.decorator';
@@ -17,14 +17,39 @@ export class AuthController {
   @Post('otp/verify')
   verifyOtp(
     @Body() body: { phone: string; sessionId: string; fullhash: string; otp: string },
+    @Headers('user-agent') userAgent?: string,
   ) {
-    return this.auth.verifyOtp(body);
+    return this.auth.verifyOtp(body, userAgent);
+  }
+
+  /**
+   * Rotate a refresh token into a fresh access + refresh pair. Unguarded on
+   * purpose: it is called exactly when the access token has expired. The
+   * refresh token itself is the credential.
+   */
+  @Post('refresh')
+  @HttpCode(200)
+  refresh(
+    @Body() body: { refreshToken: string },
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    return this.auth.refresh(body?.refreshToken, userAgent);
+  }
+
+  /** Revoke the session server-side. Works even if the access token has expired. */
+  @Post('logout')
+  @HttpCode(200)
+  logout(@Body() body: { refreshToken?: string }) {
+    return this.auth.logout(body?.refreshToken);
   }
 
   /** Secondary login, disabled by setting ALLOW_PASSWORD_LOGIN=false. */
   @Post('login')
-  login(@Body() body: { email: string; password: string }) {
-    return this.auth.login(body.email, body.password);
+  login(
+    @Body() body: { email: string; password: string },
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    return this.auth.login(body.email, body.password, userAgent);
   }
 
   // POST /auth/register is deliberately absent.

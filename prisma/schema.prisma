@@ -39,6 +39,7 @@ model Admin {
   updatedAt        DateTime          @updatedAt
   appCollaborators AppCollaborator[]
   pushTokens       AdminPushToken[]
+  refreshTokens    RefreshToken[]
 }
 
 /// A phone running the Nexus admin app, registered for push alerts.
@@ -54,6 +55,26 @@ model AdminPushToken {
   lastSeenAt DateTime @default(now())
 
   @@index([adminId])
+}
+
+// Console sessions. The access JWT lives 15 minutes; this opaque token renews it
+// so an admin is not asked for an OTP again until they log out or stay idle past
+// the refresh TTL. Only a SHA-256 of the token is stored. Each use rotates it; a
+// rotated (revoked) token presented again means it leaked, so the whole family
+// (one login) is revoked.
+model RefreshToken {
+  id        String    @id @default(uuid())
+  adminId   String
+  tokenHash String    @unique
+  familyId  String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  userAgent String?
+  admin     Admin     @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId])
+  @@index([familyId])
 }
 
 model AppCollaborator {

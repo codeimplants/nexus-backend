@@ -20,6 +20,11 @@ const OTP_TTL_MS = 5 * 60 * 1000;
 
 /** `******3210`: enough to tell two admins apart in a log, not enough to text one. */
 const maskPhone = (phone: string) => `******${String(phone).slice(-4)}`;
+/** Idle lifetime of a console session; every refresh slides it forward. */
+const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+const hashRefreshToken = (token: string) =>
+    crypto.createHash('sha256').update(token).digest('hex');
 
 @Injectable()
 export class AuthService {
@@ -53,6 +58,105 @@ export class AuthService {
             id: admin.id,
             email: admin.email,
             role: this.normalizeRole(admin.role),
+        });
+    }
+
+    /**
+     * Mint an opaque refresh token. Only its SHA-256 is persisted, so a database
+     * leak does not hand out live sessions. `familyId` ties every rotation of one
+     * login together so reuse of a stale token can revoke the whole chain.
+     */
+    private async createRefreshToken(adminId: string, familyId: string, userAgent?: string) {
+        const token = crypto.randomBytes(48).toString('base64url');
+        await this.prisma.refreshToken.create({
+            data: {
+                adminId,
+                familyId,
+                tokenHash: hashRefreshToken(token),
+                expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+                userAgent: userAgent?.slice(0, 255),
+            },
+        });
+        return token;
+    }
+
+    /** Access JWT (short-lived) + refresh token (new family) + user. */
+    private async issueSession(
+        admin: { id: string; email: string; name: string | null; role: string },
+        userAgent?: string,
+    ) {
+        return {
+            token: this.signToken(admin),
+            refreshToken: await this.createRefreshToken(admin.id, crypto.randomUUID(), userAgent),
+            user: this.toUserPayload(admin),
+        };
+    }
+
+    /**
+     * Exchange a refresh token for a new access + refresh pair (rotation).
+     *
+     * A token that is already revoked is a replay: either an attacker or the
+     * real client is holding a copy that should no longer exist. We can't tell
+     * which, so the whole family is revoked and both must sign in again.
+     */
+    async refresh(refreshToken: string, userAgent?: string) {
+        if (!refreshToken) throw new UnauthorizedException('Missing refresh token');
+
+        const row = await this.prisma.refreshToken.findUnique({
+            where: { tokenHash: hashRefreshToken(refreshToken) },
+            include: {
+                admin: { select: { id: true, email: true, name: true, role: true, isActive: true } },
+            },
+        });
+        if (!row) throw new UnauthorizedException('Invalid refresh token');
+
+        if (row.revokedAt) {
+            this.logger.warn(`Refresh token reuse for admin ${row.adminId}; revoking family ${row.familyId}`);
+            await this.revokeFamily(row.familyId);
+            throw new UnauthorizedException('Session revoked, please sign in again');
+        }
+        if (row.expiresAt.getTime() < Date.now()) {
+            throw new UnauthorizedException('Session expired, please sign in again');
+        }
+        if (!row.admin.isActive) {
+            await this.revokeFamily(row.familyId);
+            throw new UnauthorizedException('Account is deactivated');
+        }
+
+        // Conditional update: if two requests race with the same token, only one
+        // wins the rotation; the loser sees count 0 and is treated as a replay.
+        const { count } = await this.prisma.refreshToken.updateMany({
+            where: { id: row.id, revokedAt: null },
+            data: { revokedAt: new Date() },
+        });
+        if (count === 0) {
+            await this.revokeFamily(row.familyId);
+            throw new UnauthorizedException('Session revoked, please sign in again');
+        }
+
+        return {
+            token: this.signToken(row.admin),
+            refreshToken: await this.createRefreshToken(row.adminId, row.familyId, userAgent),
+            user: this.toUserPayload(row.admin),
+        };
+    }
+
+    /** Explicit logout: kill this login (every rotation of it). Idempotent. */
+    async logout(refreshToken?: string) {
+        if (refreshToken) {
+            const row = await this.prisma.refreshToken.findUnique({
+                where: { tokenHash: hashRefreshToken(refreshToken) },
+                select: { familyId: true },
+            });
+            if (row) await this.revokeFamily(row.familyId);
+        }
+        return { success: true };
+    }
+
+    private revokeFamily(familyId: string) {
+        return this.prisma.refreshToken.updateMany({
+            where: { familyId, revokedAt: null },
+            data: { revokedAt: new Date() },
         });
     }
 
@@ -174,7 +278,10 @@ export class AuthService {
         };
     }
 
-    async verifyOtp(input: { phone: string; sessionId: string; fullhash: string; otp: string }) {
+    async verifyOtp(
+        input: { phone: string; sessionId: string; fullhash: string; otp: string },
+        userAgent?: string,
+    ) {
         const { phone, sessionId, fullhash, otp } = input;
         if (!phone || !sessionId || !fullhash || !otp) {
             throw new BadRequestException('phone, sessionId, fullhash and otp are required');
@@ -209,17 +316,14 @@ export class AuthService {
         }
 
         const admin = await this.requireAdminByPhone(phone);
-        return {
-            token: this.signToken(admin),
-            user: this.toUserPayload(admin),
-        };
+        return this.issueSession(admin, userAgent);
     }
 
     // ---------------------------------------------------------------------
     // Email + password (secondary, behind ALLOW_PASSWORD_LOGIN)
     // ---------------------------------------------------------------------
 
-    async login(email: string, password: string) {
+    async login(email: string, password: string, userAgent?: string) {
         if (process.env.ALLOW_PASSWORD_LOGIN === 'false') {
             throw new ForbiddenException('Password login is disabled; use phone + OTP');
         }
@@ -234,12 +338,8 @@ export class AuthService {
         const match = await bcrypt.compare(password, admin.password);
         if (!match) throw new UnauthorizedException('Invalid credentials');
 
-        const token = this.signToken(admin);
         const { password: _, isActive: __, ...rest } = admin;
-        return {
-            token,
-            user: this.toUserPayload(rest),
-        };
+        return this.issueSession(rest, userAgent);
     }
 
     // register() was here. It minted an admin with role: 'ADMIN' hardcoded and

@@ -8,7 +8,9 @@ import { JwtGuard } from '../../common/guards/jwt.guard';
     imports: [
         JwtModule.register({
             secret: process.env.JWT_SECRET || 'change-me-in-production',
-            signOptions: { expiresIn: '7d' },
+            // Short-lived: a leaked access token is useful for minutes, not days.
+            // Sessions persist via the rotating refresh token instead.
+            signOptions: { expiresIn: '15m' },
         }),
     ],
     controllers: [AuthController],
