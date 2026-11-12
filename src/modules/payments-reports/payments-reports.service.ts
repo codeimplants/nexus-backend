@@ -51,7 +51,7 @@ interface PayApp {
     name: string;
     status: 'active' | 'suspended';
     /** The gateway this app's new payments go through. */
-    defaultProvider: string;
+    defaultProvider?: string;
     createdAt: string;
 }
 
@@ -129,7 +129,7 @@ export class PaymentsReportsService {
             this.get<{ data: PayApp[] }>('/apps', actorId),
             this.get<PaySummary>(`/summary?${qs}&groupBy=app`, actorId),
             this.get<PaySummary>(`/summary?${qs}&groupBy=app,${granularity}`, actorId),
-            this.get<{ data: Array<{ code: string }> }>('/providers', actorId),
+            this.gateways(actorId),
         ]);
 
         const statsBySlug = new Map(byApp.rows.map((r) => [r.groups.app, r]));
@@ -142,7 +142,8 @@ export class PaymentsReportsService {
                     slug: a.slug,
                     name: a.name,
                     active: a.status === 'active',
-                    gateway: a.defaultProvider,
+                    // Payments servers older than the gateway switch do not send it; they only had PhonePe.
+                    gateway: a.defaultProvider ?? 'phonepe',
                     // The order apps joined in: the dashboard colours an app by it, so a colour stays with its app.
                     createdAt: a.createdAt,
                     ...toCounts(stats),
@@ -179,7 +180,7 @@ export class PaymentsReportsService {
             },
             apps: appRows,
             /** Gateways switched on in payments, i.e. what an app's gateway can be changed to. */
-            gateways: providers.data.map((p) => p.code),
+            gateways: providers,
             series: [...series.values()],
         };
     }
@@ -231,6 +232,19 @@ export class PaymentsReportsService {
         );
         this.logger.log(`Admin ${actorId} switched ${app.slug} to ${app.defaultProvider}`);
         return { slug: app.slug, name: app.name, gateway: app.defaultProvider };
+    }
+
+    /**
+     * Gateways switched on in payments. Optional: a payments server older than the gateway switch has no
+     * /providers, and the report must not fail over it — the dropdown is then just disabled.
+     */
+    private async gateways(actorId: string): Promise<string[]> {
+        try {
+            const res = await this.get<{ data: Array<{ code: string }> }>('/providers', actorId);
+            return res.data.map((p) => p.code);
+        } catch {
+            return [];
+        }
     }
 
     // ---------------------------------------------------------------------
