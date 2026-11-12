@@ -22,6 +22,8 @@ const OTP_TTL_MS = 5 * 60 * 1000;
 const maskPhone = (phone: string) => `******${String(phone).slice(-4)}`;
 /** Idle lifetime of a console session; every refresh slides it forward. */
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** Access-token lifetime for clients that do not refresh (see signToken). */
+const LEGACY_ACCESS_TTL = '7d';
 
 const hashRefreshToken = (token: string) =>
     crypto.createHash('sha256').update(token).digest('hex');
@@ -53,12 +55,21 @@ export class AuthService {
         };
     }
 
-    private signToken(admin: { id: string; email: string; role: string }) {
-        return this.jwt.sign({
-            id: admin.id,
-            email: admin.email,
-            role: this.normalizeRole(admin.role),
-        });
+    /**
+     * Refresh-aware clients get a 15-minute access token (the module default).
+     * Clients that never call /auth/refresh — the nexus-mobile builds already on
+     * phones — keep the old 7-day token so they are not signed out every 15
+     * minutes. Once every client sends `refreshable: true`, drop LEGACY_ACCESS_TTL.
+     */
+    private signToken(admin: { id: string; email: string; role: string }, refreshable = true) {
+        return this.jwt.sign(
+            {
+                id: admin.id,
+                email: admin.email,
+                role: this.normalizeRole(admin.role),
+            },
+            refreshable ? undefined : { expiresIn: LEGACY_ACCESS_TTL },
+        );
     }
 
     /**
@@ -84,9 +95,10 @@ export class AuthService {
     private async issueSession(
         admin: { id: string; email: string; name: string | null; role: string },
         userAgent?: string,
+        refreshable = false,
     ) {
         return {
-            token: this.signToken(admin),
+            token: this.signToken(admin, refreshable),
             refreshToken: await this.createRefreshToken(admin.id, crypto.randomUUID(), userAgent),
             user: this.toUserPayload(admin),
         };
@@ -279,7 +291,7 @@ export class AuthService {
     }
 
     async verifyOtp(
-        input: { phone: string; sessionId: string; fullhash: string; otp: string },
+        input: { phone: string; sessionId: string; fullhash: string; otp: string; refreshable?: boolean },
         userAgent?: string,
     ) {
         const { phone, sessionId, fullhash, otp } = input;
@@ -316,14 +328,14 @@ export class AuthService {
         }
 
         const admin = await this.requireAdminByPhone(phone);
-        return this.issueSession(admin, userAgent);
+        return this.issueSession(admin, userAgent, input.refreshable === true);
     }
 
     // ---------------------------------------------------------------------
     // Email + password (secondary, behind ALLOW_PASSWORD_LOGIN)
     // ---------------------------------------------------------------------
 
-    async login(email: string, password: string, userAgent?: string) {
+    async login(email: string, password: string, userAgent?: string, refreshable = false) {
         if (process.env.ALLOW_PASSWORD_LOGIN === 'false') {
             throw new ForbiddenException('Password login is disabled; use phone + OTP');
         }
@@ -339,7 +351,7 @@ export class AuthService {
         if (!match) throw new UnauthorizedException('Invalid credentials');
 
         const { password: _, isActive: __, ...rest } = admin;
-        return this.issueSession(rest, userAgent);
+        return this.issueSession(rest, userAgent, refreshable);
     }
 
     // register() was here. It minted an admin with role: 'ADMIN' hardcoded and

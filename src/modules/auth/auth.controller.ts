@@ -16,7 +16,7 @@ export class AuthController {
   /** Verify the OTP and issue the same JWT the rest of the platform consumes. */
   @Post('otp/verify')
   verifyOtp(
-    @Body() body: { phone: string; sessionId: string; fullhash: string; otp: string },
+    @Body() body: { phone: string; sessionId: string; fullhash: string; otp: string; refreshable?: boolean },
     @Headers('user-agent') userAgent?: string,
   ) {
     return this.auth.verifyOtp(body, userAgent);
@@ -46,10 +46,10 @@ export class AuthController {
   /** Secondary login, disabled by setting ALLOW_PASSWORD_LOGIN=false. */
   @Post('login')
   login(
-    @Body() body: { email: string; password: string },
+    @Body() body: { email: string; password: string; refreshable?: boolean },
     @Headers('user-agent') userAgent?: string,
   ) {
-    return this.auth.login(body.email, body.password, userAgent);
+    return this.auth.login(body.email, body.password, userAgent, body.refreshable === true);
   }
 
   // POST /auth/register is deliberately absent.
