@@ -129,6 +129,13 @@ export const INVENTORY: InventoryApp[] = [
         hosts: { prod: ['api.restobill.codeimplants.com'], dev: ['dev.api.restobill.codeimplants.com'] },
     },
     {
+        id: 'pride-universal', name: 'Pride Universal', stack: 'Java 21 (Spring) · Docker', account: 'sanskarpandit',
+        docker: /^pride-/, folders: ['pride'], databases: /^pride_/, database: 'Postgres 16 (own container)',
+        // Spring's /actuator/health is not proxied by nginx (pride-universal-backend deploy/README.md).
+        healthUrl: 'http://127.0.0.1:8110/actuator/health',
+        hosts: { prod: ['api.pride.codeimplants.com'], dev: ['dev.api.pride.codeimplants.com'] },
+    },
+    {
         id: 'barnefarms', name: 'Barne Farms', stack: 'Node · Docker', account: 'sanskarpandit',
         docker: /^barnefarms-/, folders: ['barnefarms'], databases: /barne/i, database: 'MongoDB',
         hosts: {
