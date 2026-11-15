@@ -368,3 +368,61 @@ model AuditLog {
   @@index([entity, action])
   @@index([createdAt])
 }
+
+/// One platform-hardening item: an infrastructure gap we know about, the risk it
+/// carries once we have paying users, and a copy-ready brief a teammate can paste
+/// straight into their own AI session to start the work.
+///
+/// Why this lives in Nexus rather than a markdown file in a repo: the team opens
+/// Nexus already, the list has to be edited without a deploy, and two people must
+/// not silently start the same item. `owner` and `status` are the whole point —
+/// a register nobody can claim an item on is just a document.
+///
+/// Rows are reference data seeded by migration 20261115000000 from the
+/// 2026-11-15 infrastructure audit, then maintained through the UI. Severity and
+/// status are plain strings with the allowed values listed below rather than
+/// Postgres enums, matching Admin.role and FeatureFlag.platform elsewhere in this
+/// schema: adding a value must not need a migration.
+model HardeningItem {
+  id          String    @id @default(uuid())
+  /// Stable slug, e.g. "external-uptime-monitoring". Unique so the seed migration
+  /// can be re-run, and so an item can be referred to in chat or a commit message
+  /// without quoting a uuid.
+  key         String    @unique
+  title       String
+  /// CRITICAL | HIGH | MEDIUM | LOW
+  severity    String    @default("MEDIUM")
+  /// OPEN | IN_PROGRESS | BLOCKED | DONE
+  status      String    @default("OPEN")
+  /// INFRA | SECURITY | DATA | CI_CD | OBSERVABILITY | COMPLIANCE | PROCESS
+  category    String
+  /// What is missing or wrong today.
+  gap         String
+  /// What it costs us specifically once real customers are paying.
+  risk        String
+  /// Pasteable brief for a teammate's own AI session: enough context to start
+  /// without re-deriving the audit. This is the field the Copy button yields.
+  aiBrief     String
+  /// Which apps, repos or hosts this touches.
+  scope       String?
+  /// Who has claimed it. Free text, not a relation to Admin: some items are
+  /// carried by people who have no Nexus login, and an unassignable item should
+  /// still be nameable.
+  owner       String?
+  /// What was actually observed when the item was raised, so nobody has to go
+  /// looking again to believe it.
+  evidence    String?
+  /// Lower sorts first. Ties fall back to severity then title.
+  sortOrder   Int       @default(100)
+  /// Progress notes, newest appended. Deliberately one free-text column rather
+  /// than a comment table: this is a register, not a ticketing system, and the
+  /// moment it needs threads it should become one.
+  notes       String?
+  completedAt DateTime?
+  completedBy String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status, severity])
+  @@index([category])
+}

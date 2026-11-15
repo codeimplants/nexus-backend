@@ -12,6 +12,7 @@ import { MessagingReportsModule } from './modules/messaging-reports/messaging-re
 import { PaymentsReportsModule } from './modules/payments-reports/payments-reports.module';
 import { ServerReportsModule } from './modules/server-reports/server-reports.module';
 import { PushModule } from './modules/push/push.module';
+import { HardeningModule } from './modules/hardening/hardening.module';
 import { DatabaseModule } from './database/database.module';
 
 @Module({
@@ -40,6 +41,9 @@ import { DatabaseModule } from './database/database.module';
         ServerReportsModule,
         // Phones running the Nexus admin app, and push alerts to them through Expo.
         PushModule,
+        // The Platform Hardening register: infrastructure gaps, the risk each
+        // carries once we have paying users, and a pasteable brief per item.
+        HardeningModule,
     ],
 })
 export class AppModule { }
