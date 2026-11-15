@@ -327,7 +327,7 @@ export const HARDENING_SEED: HardeningSeedRow[] = [
             'lag becomes permanent.',
         evidence: 'uptime 29 days; uname -r 6.8.0-147; /var/run/reboot-required.pkgs lists the three packages.',
         aiBrief:
-            'Establish a patch window for the Code Immplants VPS and take the pending reboot.\n\n' +
+            'Establish a patch window for the Code Implants VPS and take the pending reboot.\n\n' +
             'This reboots every product simultaneously, so the founder picks the time — do not reboot ' +
             'without an explicit go-ahead naming the window.\n\n' +
             'Procedure:\n' +
