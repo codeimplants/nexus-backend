@@ -108,14 +108,32 @@ is the `sessionId`, and the `fullhash` HMAC is unchanged. dev and preprod use me
 nothing and makes every code 123456 (shown on the login screen from `devCode`); prod sends real SMS.
 
 - **Without `MESSAGING_API_KEY`, OTP login is refused.** Do not bring back a fixed-code fallback: the
-  2Factor version accepted 123456 in prod whenever its key was missing. Password login
-  (`ALLOW_PASSWORD_LOGIN`) is the way in when messaging is down.
+  2Factor version accepted 123456 in prod whenever its key was missing. Password login was removed
+  (2026-11-15), so while messaging is down only existing sessions (via `/auth/refresh`) work.
 - **Dashboard → All apps → Messages → OTP Usage Summary** comes from `src/modules/messaging-reports`
   (ADMIN only), which reads messaging's admin API over loopback with a read-only ops key
   (`MESSAGING_ADMIN_URL` / `MESSAGING_OPS_KEY`). The key never reaches the browser.
 - Both keys are written on the server by `messaging-backend/scripts/connect-app.sh` and
   `connect-ops.sh`, which never print them. See messaging-backend `docs/MIGRATION.md` (section 6) and
   `docs/API.md` (*Nexus integration*).
+
+---
+
+## Who can change things: roles, authenticator step-up, audit
+
+- **SUPER_ADMIN** (exactly one, set only by `scripts/set-console-roles.ts`, never via API) and **ADMIN**
+  can make changes. COLLABORATOR and LEAD_GEN are read-only. Only SUPER_ADMIN manages accounts and
+  reads the audit log.
+- Enforced in `JwtGuard`, not per endpoint: any non-GET needs a writer role **and** an `X-MFA-Token`
+  from `POST /auth/mfa/verify` (a code from the account's own authenticator; valid 10 min, codes are
+  single-use). New write endpoints are covered automatically; only the caller's-own-account routes in
+  `SELF_SERVICE_WRITES` are exempt. Errors carry `code: MFA_SETUP_REQUIRED | MFA_REQUIRED`.
+- TOTP is `src/common/mfa/totp.ts` (RFC 6238, no dependency). Secrets are encrypted with
+  `SERVICE_TOKEN_KEY`. Lost phone: `POST /auth/mfa/reset` with a phone OTP, or the super admin uses
+  `POST /admin/users/:id/mfa/reset`.
+- `AuditInterceptor` (global) writes an `AuditLog` row for every write attempt, success or refusal,
+  with redacted body, actor, role and `sensitive` (money/subscription paths). Rows are append-only:
+  do not add update or delete routes for them.
 
 ---
 

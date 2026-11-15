@@ -28,7 +28,7 @@ export class RuleAccessGuard implements CanActivate {
         });
         if (!rule) throw new NotFoundException('Rule not found');
 
-        if (user.role === 'ADMIN') return true;
+        if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') return true;
 
         const hasAccess = await this.prisma.appCollaborator.findUnique({
             where: {

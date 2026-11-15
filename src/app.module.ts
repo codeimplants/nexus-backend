@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { AuthModule } from './modules/auth/auth.module';
 import { AppsModule } from './modules/apps/apps.module';
 import { RulesModule } from './modules/rules/rules.module';
@@ -45,5 +47,7 @@ import { DatabaseModule } from './database/database.module';
         // carries once we have paying users, and a pasteable brief per item.
         HardeningModule,
     ],
+    // Every write by a signed-in account lands in AuditLog (who, what, outcome).
+    providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })
 export class AppModule { }

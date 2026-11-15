@@ -1,5 +1,10 @@
-import { IsEmail, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsEnum, IsOptional, IsString, Matches } from 'class-validator';
 
+/**
+ * Roles the super admin can hand out. SUPER_ADMIN itself is deliberately not
+ * here: it is set on one account by scripts/set-console-roles.ts, never via API.
+ * Every role below is read-only (see JwtGuard).
+ */
 export enum UserRole {
     ADMIN = 'ADMIN',
     COLLABORATOR = 'COLLABORATOR',
@@ -7,18 +12,21 @@ export enum UserRole {
     LEAD_GEN = 'LEAD_GEN',
 }
 
-export class CreateUserDto {
-    @IsEmail()
-    email: string;
+export const ROLE_MESSAGE = 'Role must be ADMIN, COLLABORATOR or LEAD_GEN';
 
-    @IsString()
-    @MinLength(8, { message: 'Password must be at least 8 characters' })
-    password: string;
+export class CreateUserDto {
+    /** 10-digit Indian mobile, the login identity (OTP is sent here). */
+    @Matches(/^[6-9]\d{9}$/, { message: 'Phone must be a 10-digit mobile number' })
+    phone: string;
+
+    @IsOptional()
+    @IsEmail()
+    email?: string;
 
     @IsOptional()
     @IsString()
     name?: string;
 
-    @IsEnum(UserRole, { message: 'Role must be ADMIN or COLLABORATOR' })
+    @IsEnum(UserRole, { message: ROLE_MESSAGE })
     role: UserRole;
 }

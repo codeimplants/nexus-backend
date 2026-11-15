@@ -1,18 +1,17 @@
-import { IsBoolean, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
-import { UserRole } from './create-user.dto';
+import { IsBoolean, IsEnum, IsOptional, IsString, Matches } from 'class-validator';
+import { ROLE_MESSAGE, UserRole } from './create-user.dto';
 
 export class UpdateUserDto {
     @IsOptional()
-    @IsString()
-    @MinLength(8, { message: 'Password must be at least 8 characters if provided' })
-    password?: string;
+    @Matches(/^[6-9]\d{9}$/, { message: 'Phone must be a 10-digit mobile number' })
+    phone?: string;
 
     @IsOptional()
     @IsString()
     name?: string;
 
     @IsOptional()
-    @IsEnum(UserRole, { message: 'Role must be ADMIN or COLLABORATOR' })
+    @IsEnum(UserRole, { message: ROLE_MESSAGE })
     role?: UserRole;
 
     @IsOptional()

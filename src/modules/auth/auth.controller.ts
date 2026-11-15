@@ -1,11 +1,15 @@
-import { Body, Controller, Get, Headers, HttpCode, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Headers, HttpCode, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { MfaService } from './mfa.service';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { User } from '../../common/decorators/user.decorator';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private auth: AuthService) { }
+  constructor(
+    private auth: AuthService,
+    private mfa: MfaService,
+  ) { }
 
   /** Primary console login: send an OTP to a registered admin phone. */
   @Post('otp/request')
@@ -43,14 +47,8 @@ export class AuthController {
     return this.auth.logout(body?.refreshToken);
   }
 
-  /** Secondary login, disabled by setting ALLOW_PASSWORD_LOGIN=false. */
-  @Post('login')
-  login(
-    @Body() body: { email: string; password: string; refreshable?: boolean },
-    @Headers('user-agent') userAgent?: string,
-  ) {
-    return this.auth.login(body.email, body.password, userAgent, body.refreshable === true);
-  }
+  // POST /auth/login (email + password) was removed: phone + OTP is the only
+  // way in. Sessions last via /auth/refresh, so the OTP is needed rarely.
 
   // POST /auth/register is deliberately absent.
   //
@@ -68,5 +66,53 @@ export class AuthController {
   @UseGuards(JwtGuard)
   me(@User() user: { id: string }) {
     return this.auth.me(user.id);
+  }
+
+  // ── Authenticator (TOTP) for making changes ───────────────────────────
+  // Writes to the caller's own account, so JwtGuard lets them through
+  // without an X-MFA-Token (see SELF_SERVICE_WRITES).
+
+  @Get('mfa/status')
+  @UseGuards(JwtGuard)
+  mfaStatus(@User() user: { id: string }) {
+    return this.mfa.status(user.id);
+  }
+
+  @Post('mfa/setup')
+  @UseGuards(JwtGuard)
+  mfaSetup(@User() user: { id: string }) {
+    return this.mfa.setup(user.id);
+  }
+
+  @Post('mfa/enable')
+  @HttpCode(200)
+  @UseGuards(JwtGuard)
+  mfaEnable(@User() user: { id: string }, @Body() body: { code: string }) {
+    return this.mfa.enable(user.id, String(body?.code ?? ''));
+  }
+
+  /** Authenticator code -> X-MFA-Token, valid 10 minutes for changes. */
+  @Post('mfa/verify')
+  @HttpCode(200)
+  @UseGuards(JwtGuard)
+  mfaVerify(@User() user: { id: string }, @Body() body: { code: string }) {
+    return this.mfa.verify(user.id, String(body?.code ?? ''));
+  }
+
+  /**
+   * Lost or new phone: prove the registered number with a login OTP
+   * (POST /auth/otp/request first); the authenticator is then cleared and can
+   * be set up again. Audited like every other write.
+   */
+  @Post('mfa/reset')
+  @HttpCode(200)
+  @UseGuards(JwtGuard)
+  async mfaReset(
+    @User() user: { id: string },
+    @Body() body: { phone: string; sessionId: string; fullhash: string; otp: string },
+  ) {
+    const owner = await this.auth.confirmPhoneOtp(body);
+    if (owner.id !== user.id) throw new ForbiddenException('That phone belongs to another account');
+    return this.mfa.clear(user.id);
   }
 }

@@ -155,7 +155,7 @@ async function bootstrap() {
     // x-api-key: how /sdk/* endpoints authenticate web/RN-web clients
     // (platformAnalytics.ts) — missing here silently CORS-blocks every such
     // call from a browser (native apps are unaffected; CORS is browser-only).
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-mfa-token'],
     credentials: true,
   });
 

@@ -16,7 +16,7 @@ export class RulesService {
 
     async findAll(ctx?: AccessContext) {
         let where: { appId?: { in: string[] } } = {};
-        if (ctx && ctx.role !== 'ADMIN') {
+        if (ctx && (ctx.role !== 'ADMIN' && ctx.role !== 'SUPER_ADMIN')) {
             const rows = await this.prisma.appCollaborator.findMany({
                 where: { adminId: ctx.userId },
                 select: { appId: true },

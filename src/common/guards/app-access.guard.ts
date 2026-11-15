@@ -29,7 +29,7 @@ export class AppAccessGuard implements CanActivate {
         });
         if (!app) throw new NotFoundException('App not found');
 
-        if (user.role === 'ADMIN') return true;
+        if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') return true;
 
         const hasAccess = await this.prisma.appCollaborator.findUnique({
             where: {

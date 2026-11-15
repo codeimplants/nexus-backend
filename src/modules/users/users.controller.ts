@@ -22,11 +22,11 @@ import { User } from '../../common/decorators/user.decorator';
 export class UsersController {
     constructor(private users: UsersService) { }
 
-    /** Any authenticated user can update their own profile (name / password) */
+    /** Any authenticated user can update their own name. */
     @Patch('me')
     updateSelf(
         @User() user: { id: string },
-        @Body() dto: { name?: string; password?: string },
+        @Body() dto: { name?: string },
     ) {
         return this.users.updateSelf(user.id, dto);
     }
@@ -49,28 +49,36 @@ export class UsersController {
 
     @Post()
     @UseGuards(RolesGuard)
-    @Roles('ADMIN')
+    @Roles('SUPER_ADMIN')
     create(@Body() dto: CreateUserDto) {
         return this.users.create(dto);
     }
 
     @Put(':id')
     @UseGuards(RolesGuard)
-    @Roles('ADMIN')
+    @Roles('SUPER_ADMIN')
     update(@Param('id') id: string, @Body() dto: UpdateUserDto) {
         return this.users.update(id, dto);
     }
 
     @Delete(':id')
     @UseGuards(RolesGuard)
-    @Roles('ADMIN')
+    @Roles('SUPER_ADMIN')
     remove(@Param('id') id: string) {
         return this.users.remove(id);
     }
 
+    /** Clear someone's authenticator (lost phone) so they can set it up again. */
+    @Post(':id/mfa/reset')
+    @UseGuards(RolesGuard)
+    @Roles('SUPER_ADMIN')
+    resetMfa(@Param('id') id: string) {
+        return this.users.resetMfa(id);
+    }
+
     @Put(':id/deactivate')
     @UseGuards(RolesGuard)
-    @Roles('ADMIN')
+    @Roles('SUPER_ADMIN')
     deactivate(@Param('id') id: string) {
         return this.users.deactivate(id);
     }

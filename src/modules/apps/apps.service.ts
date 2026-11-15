@@ -76,7 +76,7 @@ export class AppsService {
 
     /** Returns app IDs the user is allowed to access (all for Admin, else from AppCollaborator). */
     private async getAccessibleAppIds(ctx: AccessContext): Promise<string[] | null> {
-        if (ctx.role === 'ADMIN') return null; // null = no filter
+        if (ctx.role === 'ADMIN' || ctx.role === 'SUPER_ADMIN') return null; // null = no filter
         const rows = await this.prisma.appCollaborator.findMany({
             where: { adminId: ctx.userId },
             select: { appId: true },
@@ -85,7 +85,7 @@ export class AppsService {
     }
 
     async create(data: { collaboratorIds?: string[];[k: string]: any }, ctx: AccessContext) {
-        if (ctx.role !== 'ADMIN') throw new ForbiddenException('Only admins can create projects');
+        if (ctx.role !== 'ADMIN' && ctx.role !== 'SUPER_ADMIN') throw new ForbiddenException('Only admins can create projects');
         const { collaboratorIds = [], ...appData } = data;
         const { collaboratorIds: _c, ...rest } = appData as { collaboratorIds?: string[];[k: string]: any };
         const app = await this.prisma.app.create({
@@ -210,7 +210,7 @@ export class AppsService {
     }
 
     async update(id: string, data: { collaboratorIds?: string[];[k: string]: any }, ctx: AccessContext) {
-        if (ctx.role !== 'ADMIN') {
+        if (ctx.role !== 'ADMIN' && ctx.role !== 'SUPER_ADMIN') {
             // Collaborator can only update app details, not collaborators
             const { collaboratorIds: _, ...rest } = data;
             return this.prisma.app.update({
@@ -237,7 +237,7 @@ export class AppsService {
     }
 
     async remove(id: string, ctx: AccessContext) {
-        if (ctx.role !== 'ADMIN') throw new ForbiddenException('Only admins can delete projects');
+        if (ctx.role !== 'ADMIN' && ctx.role !== 'SUPER_ADMIN') throw new ForbiddenException('Only admins can delete projects');
         return this.prisma.app.delete({
             where: { id },
         });

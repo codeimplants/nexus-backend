@@ -106,7 +106,7 @@ export class AnalyticsService {
     ) { }
 
     private async getAccessibleAppIds(ctx: AccessContext): Promise<string[] | null> {
-        if (ctx.role === 'ADMIN') return null;
+        if (ctx.role === 'ADMIN' || ctx.role === 'SUPER_ADMIN') return null;
         const rows = await this.prisma.appCollaborator.findMany({
             where: { adminId: ctx.userId },
             select: { appId: true },

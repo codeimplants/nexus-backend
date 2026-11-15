@@ -1,7 +1,6 @@
 import {
     Injectable,
     UnauthorizedException,
-    ForbiddenException,
     BadRequestException,
     ServiceUnavailableException,
     HttpException,
@@ -9,13 +8,11 @@ import {
     Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
-import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { JwtService } from '@nestjs/jwt';
 import { MessagingApiError } from '@codeimplants/messaging-node';
 import { messagingClient } from '../../common/messaging';
 
-const SALT_ROUNDS = 12;
 const OTP_TTL_MS = 5 * 60 * 1000;
 
 /** `******3210`: enough to tell two admins apart in a log, not enough to text one. */
@@ -37,8 +34,9 @@ export class AuthService {
         private jwt: JwtService
     ) { }
 
-    private normalizeRole(role: string): 'ADMIN' | 'COLLABORATOR' | 'LEAD_GEN' {
-        // Only known lesser roles map to themselves. Everything else (SUPER_ADMIN,
+    private normalizeRole(role: string): 'SUPER_ADMIN' | 'ADMIN' | 'COLLABORATOR' | 'LEAD_GEN' {
+        if (role === 'SUPER_ADMIN') return 'SUPER_ADMIN';
+        // Only known lesser roles map to themselves. Everything else
         // legacy values) maps to ADMIN — so a NEW restricted role MUST be listed
         // here explicitly, or it would be silently promoted to full access.
         if (role === 'COLLABORATOR') return 'COLLABORATOR';
@@ -190,8 +188,9 @@ export class AuthService {
     // Without MESSAGING_API_KEY, OTP login is refused. The 2Factor code this
     // replaced fell back to a fixed 123456 whenever its key was missing, prod
     // included, so one missing line in .env let anyone who knew an admin's
-    // number into the console. When messaging is unreachable, the way in is
-    // password login (ALLOW_PASSWORD_LOGIN), not a weaker code.
+    // number into the console. Password login has been removed, so while
+    // messaging is unreachable nobody can sign in; existing sessions keep
+    // working through /auth/refresh.
     // ---------------------------------------------------------------------
 
     private requireMessaging() {
@@ -294,6 +293,15 @@ export class AuthService {
         input: { phone: string; sessionId: string; fullhash: string; otp: string; refreshable?: boolean },
         userAgent?: string,
     ) {
+        const admin = await this.confirmPhoneOtp(input);
+        return this.issueSession(admin, userAgent, input.refreshable === true);
+    }
+
+    /**
+     * Check a phone OTP and return the admin it belongs to. Used by sign-in and
+     * by authenticator reset, which needs proof of the same phone.
+     */
+    async confirmPhoneOtp(input: { phone: string; sessionId: string; fullhash: string; otp: string }) {
         const { phone, sessionId, fullhash, otp } = input;
         if (!phone || !sessionId || !fullhash || !otp) {
             throw new BadRequestException('phone, sessionId, fullhash and otp are required');
@@ -327,31 +335,7 @@ export class AuthService {
             throw new UnauthorizedException('Invalid OTP');
         }
 
-        const admin = await this.requireAdminByPhone(phone);
-        return this.issueSession(admin, userAgent, input.refreshable === true);
-    }
-
-    // ---------------------------------------------------------------------
-    // Email + password (secondary, behind ALLOW_PASSWORD_LOGIN)
-    // ---------------------------------------------------------------------
-
-    async login(email: string, password: string, userAgent?: string, refreshable = false) {
-        if (process.env.ALLOW_PASSWORD_LOGIN === 'false') {
-            throw new ForbiddenException('Password login is disabled; use phone + OTP');
-        }
-
-        const admin = await this.prisma.admin.findUnique({
-            where: { email },
-            select: { id: true, email: true, name: true, password: true, role: true, isActive: true },
-        });
-        if (!admin) throw new UnauthorizedException('Invalid credentials');
-        if (!admin.isActive) throw new UnauthorizedException('Account is deactivated');
-
-        const match = await bcrypt.compare(password, admin.password);
-        if (!match) throw new UnauthorizedException('Invalid credentials');
-
-        const { password: _, isActive: __, ...rest } = admin;
-        return this.issueSession(rest, userAgent, refreshable);
+        return this.requireAdminByPhone(phone);
     }
 
     // register() was here. It minted an admin with role: 'ADMIN' hardcoded and

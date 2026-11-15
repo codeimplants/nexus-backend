@@ -29,12 +29,18 @@ model Admin {
   id               String            @id @default(uuid())
   email            String            @unique
   password         String
-  // Primary login for the admin console is phone + OTP; email/password is kept
-  // as a secondary method behind ALLOW_PASSWORD_LOGIN.
+  // Phone + OTP is the only console login. `password` is a random unusable
+  // hash kept only because the column is required.
   phone            String?           @unique
   name             String?
-  role             String            @default("ADMIN") // ADMIN | COLLABORATOR
+  role             String            @default("ADMIN") // SUPER_ADMIN | ADMIN | COLLABORATOR | LEAD_GEN
   isActive         Boolean           @default(true)
+  // Authenticator (TOTP) for approving changes. Secret is AES-GCM encrypted
+  // (service-token-cipher). Set but mfaEnabledAt null = setup not confirmed.
+  mfaSecret        String?
+  mfaEnabledAt     DateTime?
+  // Last 30s step a code was accepted for, so one code cannot be replayed.
+  mfaLastStep      Int?
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
   appCollaborators AppCollaborator[]
@@ -356,6 +362,7 @@ model AuditLog {
   id         String   @id @default(uuid())
   adminId    String
   adminEmail String?
+  // Append-only: nothing in the API updates or deletes these rows.
   action     String // CREATE | UPDATE | DELETE | LOGIN | etc.
   entity     String // App | VersionRule | MaintenanceMode | etc.
   entityId   String?

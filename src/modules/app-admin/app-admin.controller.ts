@@ -87,7 +87,7 @@ export class AppAdminController {
         // COLLABORATOR could POST the app's own bulk-delete through here and
         // get exactly what purgeUsers refuses them. The class-level allow-list
         // cannot express this, because it cannot see the HTTP method.
-        if (req.method.toUpperCase() !== 'GET' && user?.role !== 'ADMIN') {
+        if (req.method.toUpperCase() !== 'GET' && (user?.role !== 'ADMIN' && user?.role !== 'SUPER_ADMIN')) {
             throw new ForbiddenException(
                 'Only an ADMIN may send write requests to an app backend',
             );
