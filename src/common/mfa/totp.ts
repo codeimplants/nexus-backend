@@ -55,6 +55,32 @@ export function verifyTotp(secret: string, code: string, lastStep?: number | nul
     return null;
 }
 
+/**
+ * Why a code that verifyTotp refused was refused, for a useful error. Never
+ * accepts anything. Looks `range` steps (default 5 minutes) either way:
+ *  - 'used'  : the code is from an accepted step, at or before lastStep;
+ *  - 'drift' : the code is valid for a step outside the ±1 window, so the
+ *              phone's clock is off by about `offsetSeconds` (+ = phone ahead);
+ *  - null    : it matches nothing nearby — wrong code or another authenticator.
+ */
+export function diagnoseTotp(
+    secret: string,
+    code: string,
+    lastStep?: number | null,
+    range = 10,
+): { kind: 'used' } | { kind: 'drift'; offsetSeconds: number } | null {
+    if (!/^\d{6}$/.test(code ?? '')) return null;
+    const now = currentStep();
+    for (let d = 0; d <= range; d++) {
+        for (const step of d === 0 ? [now] : [now - d, now + d]) {
+            if (codeAt(secret, step) !== code) continue;
+            if (lastStep != null && step <= lastStep) return { kind: 'used' };
+            if (Math.abs(step - now) > 1) return { kind: 'drift', offsetSeconds: (step - now) * STEP_SECONDS };
+        }
+    }
+    return null;
+}
+
 export function otpauthUrl(secret: string, account: string, issuer = 'Nexus'): string {
     const label = encodeURIComponent(`${issuer}:${account}`);
     return `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=${DIGITS}&period=${STEP_SECONDS}`;

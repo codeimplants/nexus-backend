@@ -2,7 +2,9 @@ import { BadRequestException, ConflictException, Injectable, UnauthorizedExcepti
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../database/prisma.service';
 import { decryptServiceToken, encryptServiceToken } from '../../common/crypto/service-token-cipher';
-import { generateSecret, otpauthUrl, verifyTotp } from '../../common/mfa/totp';
+import { diagnoseTotp, generateSecret, otpauthUrl, verifyTotp } from '../../common/mfa/totp';
+
+const USED_MESSAGE = 'That code was already used. Wait for the next code in your authenticator (up to 30 seconds).';
 
 /** How long one authenticator code unlocks changes for. */
 export const MFA_TOKEN_TTL_SECONDS = 10 * 60;
@@ -48,8 +50,9 @@ export class MfaService {
         const a = await this.prisma.admin.findUniqueOrThrow({ where: { id: adminId } });
         if (a.mfaEnabledAt) throw new ConflictException('Authenticator is already set up');
         if (!a.mfaSecret) throw new BadRequestException('Start setup first');
-        const step = verifyTotp(decryptServiceToken(a.mfaSecret), code, a.mfaLastStep);
-        if (step == null) throw new UnauthorizedException('Invalid code');
+        const secret = decryptServiceToken(a.mfaSecret);
+        const step = verifyTotp(secret, code, a.mfaLastStep);
+        if (step == null) this.refuse(secret, code, a.mfaLastStep, a.name ?? a.phone ?? a.email);
         await this.prisma.admin.update({
             where: { id: adminId },
             data: { mfaEnabledAt: new Date(), mfaLastStep: step },
@@ -61,15 +64,35 @@ export class MfaService {
     async verify(adminId: string, code: string) {
         const a = await this.prisma.admin.findUniqueOrThrow({ where: { id: adminId } });
         if (!a.mfaEnabledAt || !a.mfaSecret) throw new BadRequestException('Set up your authenticator first');
-        const step = verifyTotp(decryptServiceToken(a.mfaSecret), code, a.mfaLastStep);
-        if (step == null) throw new UnauthorizedException('Invalid or already used code');
+        const secret = decryptServiceToken(a.mfaSecret);
+        const step = verifyTotp(secret, code, a.mfaLastStep);
+        if (step == null) this.refuse(secret, code, a.mfaLastStep, a.name ?? a.phone ?? a.email);
         // Conditional write: two requests with the same code cannot both pass.
         const { count } = await this.prisma.admin.updateMany({
             where: { id: adminId, OR: [{ mfaLastStep: null }, { mfaLastStep: { lt: step } }] },
             data: { mfaLastStep: step },
         });
-        if (count === 0) throw new UnauthorizedException('Invalid or already used code');
+        if (count === 0) throw new UnauthorizedException(USED_MESSAGE);
         return this.issue(adminId);
+    }
+
+    /** Explain the refusal: used code, phone clock off, or not this account's authenticator. */
+    private refuse(secret: string, code: string, lastStep: number | null, account: string): never {
+        if (!/^\d{6}$/.test(code)) throw new BadRequestException('Enter the 6-digit code from your authenticator app');
+        const why = diagnoseTotp(secret, code, lastStep);
+        if (why?.kind === 'used') throw new UnauthorizedException(USED_MESSAGE);
+        if (why?.kind === 'drift') {
+            const secs = Math.abs(why.offsetSeconds);
+            const amount = secs >= 60 ? `${Math.round(secs / 60)} minute${secs >= 90 ? 's' : ''}` : `${secs} seconds`;
+            throw new UnauthorizedException(
+                `Your phone's clock is about ${amount} ${why.offsetSeconds > 0 ? 'ahead' : 'behind'}. ` +
+                `Turn on automatic date & time on the phone, then use a new code.`,
+            );
+        }
+        throw new UnauthorizedException(
+            `That code is not from the authenticator set up for ${account}. ` +
+            `Check you are signed in as yourself and are reading the "Nexus: ${account}" entry.`,
+        );
     }
 
     /** Clear an account's authenticator (own reset via phone OTP, or by the super admin). */
