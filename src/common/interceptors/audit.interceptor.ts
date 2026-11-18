@@ -11,8 +11,9 @@ const MAX_PAYLOAD_CHARS = 20_000;
  * Money and subscription changes, flagged so the audit view can filter them.
  * Matched against the request path, which for app-admin includes the path
  * proxied to the app's own backend (e.g. /admin/apps/:id/proxy/users/:uid/plan).
+ * Every Ledger write is money by definition, hence `ledger`.
  */
-const SENSITIVE_PATH = /subscri|plan|price|pricing|payment|gateway|refund|wallet|credit|limit|pro\b|premium|billing/i;
+const SENSITIVE_PATH = /subscri|plan|price|pricing|payment|gateway|refund|wallet|credit|limit|pro\b|premium|billing|ledger/i;
 
 function redact(value: unknown, depth = 0): unknown {
     if (depth > 6 || value == null || typeof value !== 'object') return value;

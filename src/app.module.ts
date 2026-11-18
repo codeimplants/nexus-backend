@@ -15,6 +15,7 @@ import { PaymentsReportsModule } from './modules/payments-reports/payments-repor
 import { ServerReportsModule } from './modules/server-reports/server-reports.module';
 import { PushModule } from './modules/push/push.module';
 import { HardeningModule } from './modules/hardening/hardening.module';
+import { LedgerModule } from './modules/ledger/ledger.module';
 import { DatabaseModule } from './database/database.module';
 
 @Module({
@@ -46,6 +47,9 @@ import { DatabaseModule } from './database/database.module';
         // The Platform Hardening register: infrastructure gaps, the risk each
         // carries once we have paying users, and a pasteable brief per item.
         HardeningModule,
+        // The partners' books: clients, recurring costs and renewals, who paid
+        // or holds each rupee, and who owes whom. Partners and super admin only.
+        LedgerModule,
     ],
     // Every write by a signed-in account lands in AuditLog (who, what, outcome).
     providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],

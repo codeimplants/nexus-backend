@@ -46,6 +46,7 @@ model Admin {
   appCollaborators AppCollaborator[]
   pushTokens       AdminPushToken[]
   refreshTokens    RefreshToken[]
+  ledgerPartner    LedgerPartner?
 }
 
 /// A phone running the Nexus admin app, registered for push alerts.
@@ -432,4 +433,243 @@ model HardeningItem {
 
   @@index([status, severity])
   @@index([category])
+}
+
+// ---------------------------------------------------------------------------
+// Ledger: the partners' own books. Which clients we bill and what they still
+// owe, which subscriptions we buy and when they renew, who paid or received
+// each rupee and by what means, and therefore who owes whom among us.
+//
+// Conventions for every Ledger model:
+//   - Money is integer PAISE (`...Paise`), never a float, so a three-way split
+//     of an odd amount cannot leave a stray fraction behind.
+//   - Dates are calendar days in IST, stored as DATE (`@db.Date`), because a
+//     due date or a payment day has no time of day.
+//   - `mode` is UPI | CASH | CARD | BANK | OTHER, a plain string like Admin.role,
+//     so adding a value is a DTO change and not a migration.
+//   - Shares are WEIGHTS ({ "<partnerId>": weight }), not percentages: 1/1/1 is
+//     an exact third each, and 40/30/30 works the same way later.
+// ---------------------------------------------------------------------------
+
+/// One of the people who share the costs and the income. Linked to a Nexus
+/// account so reminders reach their phone and the page can say "you".
+/// Never deleted, only deactivated: their past payments must stay attributable.
+model LedgerPartner {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  adminId   String?  @unique
+  admin     Admin?   @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(100)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  receiptsReceived  LedgerReceipt[]
+  expensesPaid      LedgerExpense[]
+  settlementsSent   LedgerSettlement[]   @relation("LedgerSettlementFrom")
+  settlementsGot    LedgerSettlement[]   @relation("LedgerSettlementTo")
+  subscriptionsPaid LedgerSubscription[]
+}
+
+/// How costs and income are split, from a date onward. A transaction uses the
+/// schedule in force on its own date, so changing the split later does not
+/// rewrite history. Expenses and receipts can each override it.
+model LedgerShareSchedule {
+  id            String   @id @default(uuid())
+  effectiveFrom DateTime @unique @db.Date
+  /// { "<partnerId>": weight }
+  weights       Json
+  note          String?
+  createdBy     String?
+  createdAt     DateTime @default(now())
+}
+
+/// Someone who pays us.
+model LedgerClient {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  contactName String?
+  phone       String?
+  email       String?
+  notes       String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  plans         LedgerPlan[]
+  charges       LedgerCharge[]
+  receipts      LedgerReceipt[]
+  subscriptions LedgerSubscription[]
+  expenses      LedgerExpense[]
+}
+
+/// What a client is billed for, once or on repeat. Produces LedgerCharge rows
+/// as each due date arrives.
+model LedgerPlan {
+  id            String       @id @default(uuid())
+  clientId      String
+  client        LedgerClient @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  product       String
+  amountPaise   Int
+  /// 0 = one-time, 1 = monthly, 3 = quarterly, 12 = yearly; any whole number of months.
+  cycleMonths   Int
+  startDate     DateTime     @db.Date
+  /// Last day it may bill on. Null = until stopped.
+  endDate       DateTime?    @db.Date
+  /// Charges produced so far. The next falls on startDate + cycleMonths x
+  /// periodsBilled, counted from the start so a plan on the 31st does not
+  /// drift to the 28th after February.
+  periodsBilled Int          @default(0)
+  /// Derived from the fields above, stored so upcoming dues sort in SQL.
+  /// Null once the plan has nothing left to bill.
+  nextDueDate   DateTime?    @db.Date
+  isActive      Boolean      @default(true)
+  notes         String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  charges LedgerCharge[]
+
+  @@index([clientId])
+  @@index([isActive, nextDueDate])
+}
+
+/// One amount a client owes: produced by a plan, by renewing a subscription
+/// we bill on to them, by hardware we sell them, or added by hand.
+model LedgerCharge {
+  id             String              @id @default(uuid())
+  clientId       String
+  client         LedgerClient        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  planId         String?
+  plan           LedgerPlan?         @relation(fields: [planId], references: [id], onDelete: SetNull)
+  subscriptionId String?
+  subscription   LedgerSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  /// The purchase this passes on to the client, when it does.
+  expenseId      String?             @unique
+  expense        LedgerExpense?      @relation(fields: [expenseId], references: [id], onDelete: SetNull)
+  description    String
+  amountPaise    Int
+  dueDate        DateTime            @db.Date
+  note           String?
+  createdBy      String?
+  createdAt      DateTime            @default(now())
+
+  /// A plan bills a given day once, however many times billing runs.
+  @@unique([planId, dueDate])
+  @@index([clientId, dueDate])
+}
+
+/// Money a client paid us, and which partner is holding it.
+model LedgerReceipt {
+  id           String        @id @default(uuid())
+  clientId     String
+  client       LedgerClient  @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  amountPaise  Int
+  receivedOn   DateTime      @db.Date
+  mode         String
+  receivedById String
+  receivedBy   LedgerPartner @relation(fields: [receivedById], references: [id], onDelete: Restrict)
+  reference    String?
+  note         String?
+  /// Overrides the share schedule for this receipt only.
+  weights      Json?
+  createdBy    String?
+  createdAt    DateTime      @default(now())
+
+  @@index([clientId, receivedOn])
+  @@index([receivedById])
+}
+
+/// Something we pay for again and again: a server, a tool, a domain, a store
+/// account, the CA's annual fee, a government filing or challan.
+model LedgerSubscription {
+  id             String         @id @default(uuid())
+  name           String
+  /// HOSTING | SOFTWARE | DOMAIN | APP_STORE | EQUIPMENT | PROFESSIONAL |
+  /// GOVERNMENT | OTHER, the same list as LedgerExpense.category, which a
+  /// renewal copies.
+  category       String         @default("OTHER")
+  vendor         String?
+  /// Null = not known yet (a challan whose amount is set each year).
+  amountPaise    Int?
+  /// The amount (or the date) is a best guess, e.g. a filing the CA has not
+  /// confirmed. Shown as "about" and flagged until someone confirms it.
+  isEstimate     Boolean        @default(false)
+  /// 1 = monthly, 12 = yearly, 24 = a two-year plan; any whole number of months.
+  cycleMonths    Int
+  /// Null = not known yet. The page lists these so the gap gets filled.
+  nextRenewal    DateTime?      @db.Date
+  autoRenew      Boolean        @default(false)
+  /// Which card or account it is charged to, as a label ("Swapnil HDFC
+  /// card"). Never a card number.
+  paymentMethod  String?
+  defaultPayerId String?
+  defaultPayer   LedgerPartner? @relation(fields: [defaultPayerId], references: [id], onDelete: SetNull)
+  /// Set when we bill this on to a client: renewing adds a charge to them.
+  clientId       String?
+  client         LedgerClient?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  /// What the client is charged on renewal. Null = the same as amountPaise.
+  rebillPaise    Int?
+  isActive       Boolean        @default(true)
+  notes          String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  expenses LedgerExpense[]
+  charges  LedgerCharge[]
+
+  @@index([isActive, nextRenewal])
+}
+
+/// Money we spent, and which partner paid it.
+model LedgerExpense {
+  id             String              @id @default(uuid())
+  description    String
+  /// HOSTING | SOFTWARE | DOMAIN | APP_STORE | EQUIPMENT | PROFESSIONAL |
+  /// GOVERNMENT | OTHER. EQUIPMENT is hardware we buy to build or run our
+  /// software (test phones, printers, devices), whether we keep it or pass it
+  /// on to a client; PROFESSIONAL is the CA and similar; GOVERNMENT is ROC
+  /// fees, tax and other challans.
+  category       String              @default("OTHER")
+  vendor         String?
+  amountPaise    Int
+  paidOn         DateTime            @db.Date
+  paidById       String
+  paidBy         LedgerPartner       @relation(fields: [paidById], references: [id], onDelete: Restrict)
+  mode           String
+  subscriptionId String?
+  subscription   LedgerSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  /// The client this was bought for, if any. Informational on its own: the
+  /// client owes us for it only if a charge links back (`rebill`), so a cost we
+  /// absorb is never mistaken for one we pass on.
+  clientId       String?
+  client         LedgerClient?       @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  /// Overrides the share schedule for this expense only.
+  weights        Json?
+  note           String?
+  createdBy      String?
+  createdAt      DateTime            @default(now())
+
+  rebill LedgerCharge?
+
+  @@index([paidOn])
+  @@index([paidById])
+  @@index([category])
+}
+
+/// One partner paying another to even out who has put in what.
+model LedgerSettlement {
+  id          String        @id @default(uuid())
+  fromId      String
+  from        LedgerPartner @relation("LedgerSettlementFrom", fields: [fromId], references: [id], onDelete: Restrict)
+  toId        String
+  to          LedgerPartner @relation("LedgerSettlementTo", fields: [toId], references: [id], onDelete: Restrict)
+  amountPaise Int
+  paidOn      DateTime      @db.Date
+  mode        String
+  note        String?
+  createdBy   String?
+  createdAt   DateTime      @default(now())
+
+  @@index([paidOn])
 }
