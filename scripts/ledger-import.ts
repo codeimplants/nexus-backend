@@ -78,7 +78,7 @@ const CLIENTS: ClientIn[] = [
             { on: '2026-01-05', amount: 10000, mode: 'CASH', by: 'Swapnil' },
             { on: '2026-03-12', amount: 10000, mode: 'UPI', by: 'Samrudhi', note: 'PhonePe' },
             { on: '2026-09-06', amount: 4000, mode: 'CASH', by: 'Mahesh' },
-            { on: '2025-11-24', amount: 1420, mode: 'UPI', by: null, note: 'Domain renewal, PhonePe' },
+            { on: '2025-11-24', amount: 1420, mode: 'UPI', by: 'Mahesh', note: 'Domain renewal, PhonePe' },
             { on: '2026-11-17', amount: 8000, mode: 'CASH', by: 'Mahesh', note: 'Hosting Aug to Nov 2026' },
         ],
     },
@@ -111,14 +111,14 @@ interface SubIn {
 const TENTATIVE = 'Tentative: confirm the date and amount with the CA. Mark renewed once filed and it moves to next year.';
 
 const SUBSCRIPTIONS: SubIn[] = [
-    { name: 'VPS', category: 'HOSTING', vendor: 'Hostinger', amount: 21212, cycleMonths: 12, nextRenewal: null, payer: 'Swapnil', isEstimate: true, notes: 'Plan length not confirmed: set the cycle (12 or 24 months) and date.' },
-    { name: 'Lovable', category: 'SOFTWARE', vendor: 'Lovable', amount: 5103, cycleMonths: 12, nextRenewal: null, payer: YOU },
-    { name: 'Base44', category: 'SOFTWARE', vendor: 'Base44', amount: 32202, cycleMonths: 12, nextRenewal: null, payer: YOU },
+    { name: 'VPS', category: 'HOSTING', vendor: 'Hostinger', amount: 21212, cycleMonths: 24, nextRenewal: null, payer: 'Swapnil', notes: '24-month plan. Renewal date to be filled in.' },
+    { name: 'Lovable', category: 'SOFTWARE', vendor: 'Lovable', amount: 5103, cycleMonths: 12, nextRenewal: null, payer: YOU, notes: 'Bought in 2026 for one year. Renewal date to be filled in.' },
+    { name: 'Base44', category: 'SOFTWARE', vendor: 'Base44', amount: 32202, cycleMonths: 12, nextRenewal: null, payer: YOU, notes: 'Bought in 2026 for one year. Renewal date to be filled in.' },
     { name: 'Apple Developer (Barne Farms app)', category: 'APP_STORE', vendor: 'Apple', amount: 8700, cycleMonths: 12, nextRenewal: '2027-10-01', isEstimate: true, payer: YOU, client: 'Barne Farms', rebill: 10000, notes: 'Barne was billed 10,000 on 1 Oct 2026; renewal date assumed a year on.' },
     { name: 'Barne Farms domain', category: 'DOMAIN', amount: null, cycleMonths: 12, nextRenewal: '2026-11-24', isEstimate: true, client: 'Barne Farms', rebill: 1420, notes: 'Last renewed 24 Nov 2025 (billed 1,420). Our cost not recorded.' },
     { name: 'codeimplants.com domain', category: 'DOMAIN', vendor: 'Hostinger', amount: null, cycleMonths: 12, nextRenewal: null },
     { name: 'Panchal domain', category: 'DOMAIN', amount: null, cycleMonths: 12, nextRenewal: null, notes: 'Whether Panchal Sonar is billed for it is not decided yet.' },
-    { name: 'VectraWD domain', category: 'DOMAIN', amount: 1201, cycleMonths: 12, nextRenewal: '2027-07-14', notes: 'Covered by VectraWD\'s hosting fee, so not billed on.' },
+    { name: 'VectraWD domain', category: 'DOMAIN', amount: 1201, cycleMonths: 12, nextRenewal: '2027-07-14', payer: 'Mahesh', notes: 'Covered by VectraWD\'s hosting fee, so not billed on.' },
     { name: 'CA annual fee', category: 'PROFESSIONAL', amount: 30000, cycleMonths: 12, nextRenewal: null, isEstimate: true, notes: 'Last paid 30,000. Date not recorded.' },
     // Usual private limited company deadlines for a financial year ending 31 March
     // with the AGM by 30 September. Amounts depend on capital and late fees.
@@ -143,27 +143,33 @@ interface ExpenseIn {
 }
 
 const EXPENSES: ExpenseIn[] = [
-    { description: 'VPS', category: 'HOSTING', vendor: 'Hostinger', amount: 21212, paidOn: null, paidBy: 'Swapnil', mode: 'OTHER', subscription: 'VPS' },
+    { description: 'VPS (2 years)', category: 'HOSTING', vendor: 'Hostinger', amount: 21212, paidOn: null, paidBy: 'Swapnil', mode: 'OTHER', subscription: 'VPS' },
     { description: 'Lovable (1 year)', category: 'SOFTWARE', vendor: 'Lovable', amount: 5103, paidOn: null, paidBy: YOU, mode: 'OTHER', subscription: 'Lovable' },
     { description: 'Base44 (1 year)', category: 'SOFTWARE', vendor: 'Base44', amount: 32202, paidOn: null, paidBy: YOU, mode: 'OTHER', subscription: 'Base44' },
     { description: 'Apple Developer Program', category: 'APP_STORE', vendor: 'Apple', amount: 8700, paidOn: null, paidBy: YOU, mode: 'OTHER', subscription: 'Apple Developer (Barne Farms app)', client: 'Barne Farms', note: 'The second App Store payment; the first is not recorded.' },
-    { description: 'VectraWD domain', category: 'DOMAIN', amount: 1201, paidOn: '2026-07-14', paidBy: null, mode: 'OTHER', subscription: 'VectraWD domain', client: 'VectraWD' },
+    { description: 'VectraWD domain', category: 'DOMAIN', amount: 1201, paidOn: '2026-07-14', paidBy: 'Mahesh', mode: 'OTHER', subscription: 'VectraWD domain', client: 'VectraWD' },
 ];
 
 // ---------------------------------------------------------------------------
 
 const apply = process.argv.includes('--apply');
 const partnersOnly = process.argv.includes('--partners');
-const R =(rupees: number) => Math.round(rupees * 100);
+const R = (rupees: number) => Math.round(rupees * 100);
 const today = todayIst();
+
+/**
+ * An unknown payment date does not change who owes whom (one split covers all
+ * of it), only which month the cost shows in. So, as agreed on 2026-11-18, such
+ * expenses are recorded on the import day with a note saying so, to be deleted
+ * and re-added with the real date. Unknown payers and receivers still block.
+ */
+const UNDATED_NOTE = `Real payment date not known yet; recorded on the import day (${today}). Delete and add again with the real date.`;
+const expenseNote = (e: ExpenseIn) => (e.paidOn ? e.note : [e.note, UNDATED_NOTE].filter(Boolean).join(' '));
 
 function missingFacts(): string[] {
     const out: string[] = [];
     for (const c of CLIENTS) for (const r of c.receipts) if (!r.by) out.push(`Who received ${c.name}'s ${formatRupees(R(r.amount))} on ${r.on}${r.note ? ` (${r.note})` : ''}?`);
-    for (const e of EXPENSES) {
-        if (!e.paidBy) out.push(`Who paid for ${e.description} (${formatRupees(R(e.amount))})?`);
-        if (!e.paidOn) out.push(`When was ${e.description} (${formatRupees(R(e.amount))}) paid?`);
-    }
+    for (const e of EXPENSES) if (!e.paidBy) out.push(`Who paid for ${e.description} (${formatRupees(R(e.amount))})?`);
     return out;
 }
 
@@ -257,6 +263,11 @@ async function main() {
 
     const missing = missingFacts();
     preview();
+    const undated = EXPENSES.filter((e) => !e.paidOn);
+    if (undated.length) {
+        console.log(`\nDate not known, recorded on ${today} (${undated.length}):`);
+        for (const e of undated) console.log(`  - ${e.description} (${formatRupees(R(e.amount))})`);
+    }
     if (missing.length) {
         console.log(`\nStill missing (${missing.length}):`);
         for (const m of missing) console.log(`  - ${m}`);
@@ -336,12 +347,12 @@ async function main() {
                         category: e.category,
                         vendor: e.vendor,
                         amountPaise: R(e.amount),
-                        paidOn: toDbDate(e.paidOn!),
+                        paidOn: toDbDate(e.paidOn ?? today),
                         paidById: pid[e.paidBy!],
                         mode: e.mode,
                         subscriptionId: e.subscription ? sid[e.subscription] : null,
                         clientId: e.client ? cid[e.client] : null,
-                        note: e.note,
+                        note: expenseNote(e),
                         createdBy: 'import',
                     },
                 });
