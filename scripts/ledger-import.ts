@@ -5,18 +5,21 @@
  *
  *   npx ts-node scripts/ledger-import.ts           # dry run: what it would write, the
  *                                                  # balances that result, and what is missing
+ *   npx ts-node scripts/ledger-import.ts --partners  # only the partners, the split and
+ *                                                    # their account links, so the page opens
  *   npx ts-node scripts/ledger-import.ts --apply   # writes, once nothing is missing
  *
  * `null` below means "not known yet". The dry run lists every one; --apply
  * refuses while any remain on a row that affects who owes whom, because a
  * guessed payer is a wrong balance that looks right. Fill them in and re-run.
  *
- * --apply also refuses if the Ledger already has partners or clients, so it can
- * only ever load once. After that, the page is the way to change anything.
+ * --apply reuses partners that already exist (from --partners or the page) and
+ * refuses if the Ledger already has clients, so the books can only ever load
+ * once. After that, the page is the way to change anything.
  *
  * Amounts here are RUPEES for readability; the script converts to paise.
  */
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import {
     clientStatus,
     dueDatesUpTo,
@@ -150,7 +153,8 @@ const EXPENSES: ExpenseIn[] = [
 // ---------------------------------------------------------------------------
 
 const apply = process.argv.includes('--apply');
-const R = (rupees: number) => Math.round(rupees * 100);
+const partnersOnly = process.argv.includes('--partners');
+const R =(rupees: number) => Math.round(rupees * 100);
 const today = todayIst();
 
 function missingFacts(): string[] {
@@ -203,7 +207,54 @@ function preview() {
     })));
 }
 
+/**
+ * The partners by name → id, creating them (linked to the one active account
+ * whose name or email contains their name, if exactly one does) and the split
+ * when the Ledger has none. Existing partners are reused, never duplicated.
+ */
+async function ensurePartners(tx: Prisma.TransactionClient): Promise<Record<string, string>> {
+    const pid: Record<string, string> = {};
+    const existing = await tx.ledgerPartner.findMany();
+    if (existing.length) {
+        for (const p of existing) pid[p.name] = p.id;
+        const absent = PARTNERS.filter((p) => !pid[p.name]).map((p) => p.name);
+        if (absent.length) throw new Error(`The Ledger has partners, but not ${absent.join(', ')}. Add them on the page first.`);
+        console.log(`Partners already set up: ${existing.map((p) => p.name).join(', ')}`);
+    } else {
+        const admins = await tx.admin.findMany({ where: { isActive: true }, select: { id: true, name: true, email: true } });
+        for (const p of PARTNERS) {
+            const matches = admins.filter((a) => (a.name ?? a.email).toLowerCase().includes(p.adminNameHint));
+            const row = await tx.ledgerPartner.create({ data: { name: p.name, sortOrder: p.sortOrder, adminId: matches.length === 1 ? matches[0].id : null } });
+            pid[p.name] = row.id;
+            console.log(`Partner ${p.name}: ${matches.length === 1 ? `linked to ${matches[0].name ?? matches[0].email}` : `not linked (${matches.length} matching accounts); link on the page`}`);
+        }
+    }
+    if ((await tx.ledgerShareSchedule.count()) === 0) {
+        await tx.ledgerShareSchedule.create({
+            data: {
+                effectiveFrom: toDbDate(SPLIT.effectiveFrom),
+                weights: Object.fromEntries(Object.entries(SPLIT.weights).map(([n, w]) => [pid[n], w])),
+                note: 'Equal thirds',
+                createdBy: 'import',
+            },
+        });
+        console.log(`Split: equal thirds from ${SPLIT.effectiveFrom}`);
+    }
+    return pid;
+}
+
 async function main() {
+    if (partnersOnly) {
+        const prisma = new PrismaClient();
+        try {
+            await prisma.$transaction((tx) => ensurePartners(tx));
+            console.log('\nPartners ready. Open Nexus > Ledger.');
+        } finally {
+            await prisma.$disconnect();
+        }
+        return;
+    }
+
     const missing = missingFacts();
     preview();
     if (missing.length) {
@@ -221,26 +272,10 @@ async function main() {
 
     const prisma = new PrismaClient();
     try {
-        const [partners, clients] = await Promise.all([prisma.ledgerPartner.count(), prisma.ledgerClient.count()]);
-        if (partners || clients) throw new Error('The Ledger already has data. This import only loads an empty Ledger; use the page from here on.');
+        if (await prisma.ledgerClient.count()) throw new Error('The Ledger already has clients. This import only loads empty books; use the page from here on.');
 
-        const admins = await prisma.admin.findMany({ where: { isActive: true }, select: { id: true, name: true, email: true } });
         await prisma.$transaction(async (tx) => {
-            const pid: Record<string, string> = {};
-            for (const p of PARTNERS) {
-                const matches = admins.filter((a) => (a.name ?? a.email).toLowerCase().includes(p.adminNameHint));
-                const row = await tx.ledgerPartner.create({ data: { name: p.name, sortOrder: p.sortOrder, adminId: matches.length === 1 ? matches[0].id : null } });
-                pid[p.name] = row.id;
-                console.log(`Partner ${p.name}: ${matches.length === 1 ? `linked to ${matches[0].name ?? matches[0].email}` : `not linked (${matches.length} matching accounts); link on the page`}`);
-            }
-            await tx.ledgerShareSchedule.create({
-                data: {
-                    effectiveFrom: toDbDate(SPLIT.effectiveFrom),
-                    weights: Object.fromEntries(Object.entries(SPLIT.weights).map(([n, w]) => [pid[n], w])),
-                    note: 'Equal thirds',
-                    createdBy: 'import',
-                },
-            });
+            const pid = await ensurePartners(tx);
 
             const cid: Record<string, string> = {};
             for (const c of CLIENTS) {
@@ -311,7 +346,7 @@ async function main() {
                     },
                 });
             }
-        });
+        }, { timeout: 60_000 }); // ~60 writes; Prisma's 5 s default is too tight to be sure of.
         console.log('\nImported. Open Nexus > Ledger.');
     } finally {
         await prisma.$disconnect();
